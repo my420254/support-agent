@@ -8,11 +8,32 @@ RRF（Reciprocal Rank Fusion）：两路各自按名次贡献 1/(k+rank)，加�
   测试集 Hit@1 0.750→0.775、nDCG@5 0.889→0.911。k 在 60~100 区间不敏感。
 """
 
+import re
+
 import jieba
 from rank_bm25 import BM25Okapi
 
 from retrieval.embedder import get_embedder
 from retrieval.qdrant_store import QdrantStore
+
+# 中文段（含标点）用于分流；其余按英文/数字处理
+_CJK_RE = re.compile(r"[一-鿿]+")
+_TOKEN_RE = re.compile(r"[一-鿿]+|[A-Za-z0-9_]+")
+
+
+def tokenize_mixed(text: str) -> list[str]:
+    """中英混合分词：中文段走 jieba，英文/数字段按小写单词切。
+
+    为什么不能只用 jieba：jieba 是中文分词器，对 "How to deploy Dify" 这类
+    英文会把连续字母当成一个"词"，导致 BM25 无法命中单个英文关键词。
+    """
+    tokens: list[str] = []
+    for seg in _TOKEN_RE.findall(text):
+        if _CJK_RE.match(seg):
+            tokens.extend(jieba.cut(seg))
+        else:
+            tokens.append(seg.lower())
+    return tokens
 
 RRF_K = 60  # RRF 平滑常数（原论文/ES/Qdrant 默认；60~100 不敏感）
 DENSE_LIMIT = 20  # dense 路取的候选数
@@ -53,7 +74,7 @@ class HybridRetriever:
             if offset is None or not res:
                 break
         self.chunks = chunks
-        corpus = [list(jieba.cut(c.payload["text"])) for c in chunks]
+        corpus = [tokenize_mixed(c.payload["text"]) for c in chunks]
         self.bm25 = BM25Okapi(corpus)
 
     @staticmethod
@@ -68,7 +89,7 @@ class HybridRetriever:
 
     def search_bm25(self, query: str, top_k: int = 4) -> list[dict]:
         """仅 BM25 关键词检索（用于消融实验，量化 dense 与 BM25 各自贡献）。"""
-        scores = self.bm25.get_scores(list(jieba.cut(query)))
+        scores = self.bm25.get_scores(tokenize_mixed(query))
         top_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
         out = []
         for idx in top_idx:
@@ -88,7 +109,7 @@ class HybridRetriever:
         dense = self.store.search(vec, limit=DENSE_LIMIT)
 
         # 2) sparse 路：BM25 关键词检索
-        bm25_scores = self.bm25.get_scores(list(jieba.cut(query)))
+        bm25_scores = self.bm25.get_scores(tokenize_mixed(query))
         sparse_idx = sorted(
             range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True
         )[:SPARSE_LIMIT]
