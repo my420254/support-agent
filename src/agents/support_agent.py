@@ -44,6 +44,8 @@ ROUTE_PROMPT = """你是客服意图分类器。判断用户这句话属于哪�
 
 ORDER_ID_RE = re.compile(r"ORD\d+", re.IGNORECASE)
 
+EXTRACT_ORDER_ID_PROMPT = """从用户消息里提取订单号（形如 ORD12345）。只输出订单号本身；没有则输出 NONE。"""
+
 GENERATE_PROMPT = """你是「Dify」产品的技术支持客服。基于下面检索到的文档回答用户问题。
 
 规则：
@@ -81,6 +83,7 @@ class AgentState(MessagesState, total=False):
     documents: list[dict]
     rewrite_count: int
     draft_answer: str  # generate 草稿，非「无法回答」时 commit 入 messages
+    order_id: str  # 订单号（实体抽取结果）
 
 
 def _get_model(config: RunnableConfig) -> BaseChatModel:
@@ -204,16 +207,42 @@ def chitchat(state: AgentState, config: RunnableConfig) -> dict:
     return {"messages": [AIMessage(content=CHITCHAT_TEXT)]}
 
 
-def order_lookup(state: AgentState, config: RunnableConfig) -> dict:
-    """订单查询节点：实体抽取（订单号）→ 调订单工具 → 返回结果。"""
+async def extract_order_id(state: AgentState, config: RunnableConfig) -> dict:
+    """实体抽取：先正则快速路径，再 LLM 兜底（处理"我的单号是 12345"这类变体）。"""
     m = ORDER_ID_RE.search(state["original_question"])
-    if not m:
-        return {
-            "messages": [
-                AIMessage(content="请提供订单号（格式如 ORD12345），我来帮您查询订单状态。")
-            ]
-        }
-    return {"messages": [AIMessage(content=query_order(m.group(0)))]}
+    if m:
+        return {"order_id": m.group(0).upper()}
+    model = _get_model(config)
+    resp = await model.with_config(tags=["skip_stream"]).ainvoke(
+        [SystemMessage(EXTRACT_ORDER_ID_PROMPT), HumanMessage(state["original_question"])]
+    )
+    oid = str(resp.content).strip()
+    return {"order_id": oid if oid and "none" not in oid.lower() else ""}
+
+
+def route_order(state: AgentState) -> Literal["query_order", "ask_id"]:
+    return "query_order" if state.get("order_id") else "ask_id"
+
+
+def query_order_node(state: AgentState, config: RunnableConfig) -> dict:
+    return {"messages": [AIMessage(content=query_order(state["order_id"]))]}
+
+
+def ask_id(state: AgentState, config: RunnableConfig) -> dict:
+    return {"messages": [AIMessage(content="请提供订单号（格式如 ORD12345），我来帮您查询订单状态。")]}
+
+
+def _build_order_specialist():
+    """订单专家子图：实体抽取 → 有号查询 / 无号反问（感知→决策→行动）。"""
+    g = StateGraph(AgentState)
+    g.add_node("extract_id", extract_order_id)
+    g.add_node("query_order", query_order_node)
+    g.add_node("ask_id", ask_id)
+    g.set_entry_point("extract_id")
+    g.add_conditional_edges("extract_id", route_order, {"query_order": "query_order", "ask_id": "ask_id"})
+    g.add_edge("query_order", END)
+    g.add_edge("ask_id", END)
+    return g.compile()
 
 
 def complaint_handle(state: AgentState, config: RunnableConfig) -> dict:
@@ -267,7 +296,7 @@ graph = StateGraph(AgentState)
 graph.add_node("prepare", prepare)
 graph.add_node("route", route)
 graph.add_node("knowledge", _build_knowledge_specialist())
-graph.add_node("order", _build_tool_specialist("order_lookup", order_lookup))
+graph.add_node("order", _build_order_specialist())
 graph.add_node("complaint", _build_tool_specialist("complaint_handle", complaint_handle))
 graph.add_node("chitchat", chitchat)
 graph.add_node("escalate", escalate)
