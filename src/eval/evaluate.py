@@ -37,9 +37,11 @@ def build_search(retriever: str):
     return search_knowledge_base
 
 
-def evaluate(search=None, top_k: int = 10) -> dict:
+def evaluate(search=None, top_k: int = 10, limit: int | None = None) -> dict:
     search = search or search_knowledge_base
     golden = load_golden()
+    if limit:
+        golden = golden[:limit]
     hits = {k: 0 for k in (1, 3, 5, 10)}
     mrr_sum = 0.0
     ndcg_sum = 0.0
@@ -67,10 +69,11 @@ def evaluate(search=None, top_k: int = 10) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--retriever", choices=["dense", "hybrid", "bm25", "rerank"], default="dense")
+    parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
 
     search = build_search(args.retriever)
-    m = evaluate(search=search)
+    m = evaluate(search=search, limit=args.limit)
     print(f"retriever: {args.retriever} | questions: {m['n']}")
     for key in ("Hit@1", "Hit@3", "Hit@5", "Hit@10", "MRR", "nDCG@5"):
         print(f"  {key}: {m[key]:.4f}")
