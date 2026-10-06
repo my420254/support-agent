@@ -40,7 +40,9 @@ ASSUMED_TRAFFIC = {
     "escalate": 0.05,
 }
 
-# 期望工具 → 实际会运行的节点名（当前架构下"工具"是节点内函数，按节点判定）
+# 期望工具 → 会运行的节点名（当前架构下"工具"是节点内函数，按节点判定）
+# 注意：complaint 子图在首节点即 interrupt，父层收不到子图节点更新事件，
+# 需从 interrupt 的值里取证（见 run_task），故这里同时列出子图与外层节点名。
 TOOL_TO_NODE = {
     "lookup_knowledge_base": "retrieve",
     "query_order": "query_order",
@@ -116,6 +118,11 @@ async def run_task(task: dict) -> dict:
                 if node == "__interrupt__":
                     nodes.append("__interrupt__")
                     visited.add("__interrupt__")
+                    # 子图在首节点 interrupt 时父层收不到节点更新，
+                    # 从中断值取证：含工单号 → 证明 create_ticket 已执行
+                    for itr in upd or []:
+                        if "TICKET-" in str(getattr(itr, "value", "")):
+                            visited.add("complaint_handle")
                     continue
                 nodes.append(node)
                 visited.add(node)
