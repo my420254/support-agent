@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from agents.tools import search_knowledge_base
-from eval.metrics import hit_at_k, reciprocal_rank, unique_doc_ids
+from eval.metrics import hit_at_k, ndcg_at_k, reciprocal_rank, unique_doc_ids
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -42,6 +42,7 @@ def evaluate(search=None, top_k: int = 10) -> dict:
     golden = load_golden()
     hits = {k: 0 for k in (1, 3, 5, 10)}
     mrr_sum = 0.0
+    ndcg_sum = 0.0
 
     for g in golden:
         results = search(g["question"], top_k=top_k)
@@ -49,6 +50,7 @@ def evaluate(search=None, top_k: int = 10) -> dict:
         for k in hits:
             hits[k] += hit_at_k(g["gt_doc_id"], doc_ids, k)
         mrr_sum += reciprocal_rank(g["gt_doc_id"], doc_ids)
+        ndcg_sum += ndcg_at_k(g["gt_doc_id"], doc_ids, 5)
 
     n = len(golden)
     return {
@@ -58,6 +60,7 @@ def evaluate(search=None, top_k: int = 10) -> dict:
         "Hit@5": hits[5] / n if n else 0,
         "Hit@10": hits[10] / n if n else 0,
         "MRR": mrr_sum / n if n else 0,
+        "nDCG@5": ndcg_sum / n if n else 0,
     }
 
 
@@ -69,7 +72,7 @@ def main() -> None:
     search = build_search(args.retriever)
     m = evaluate(search=search)
     print(f"retriever: {args.retriever} | questions: {m['n']}")
-    for key in ("Hit@1", "Hit@3", "Hit@5", "Hit@10", "MRR"):
+    for key in ("Hit@1", "Hit@3", "Hit@5", "Hit@10", "MRR", "nDCG@5"):
         print(f"  {key}: {m[key]:.4f}")
 
 

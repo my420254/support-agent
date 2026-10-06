@@ -24,3 +24,13 @@ def reciprocal_rank(gt_doc_id: str, retrieved_doc_ids: list[str]) -> float:
         if d == gt_doc_id:
             return 1.0 / i
     return 0.0
+
+
+def ndcg_at_k(gt_doc_id: str, retrieved_doc_ids: list[str], k: int) -> float:
+    """单 gt 的二值相关 nDCG@k：命中第 r 位得 1/log2(r+1)，未命中 0。"""
+    import math
+
+    for i, d in enumerate(retrieved_doc_ids[:k], 1):
+        if d == gt_doc_id:
+            return 1.0 / math.log2(i + 1)
+    return 0.0
