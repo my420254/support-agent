@@ -197,5 +197,6 @@ smoke_live_app_failure.png
 # Claude Code agent worktrees (ephemeral, per-agent git checkouts)
 .claude/worktrees/
 
-# Project data (raw corpus + processed) - fetched, not committed
-data/
+# raw 语料(第三方) + processed 产物不提交；golden 评测集是自有资产，提交
+data/raw/
+data/processed/
