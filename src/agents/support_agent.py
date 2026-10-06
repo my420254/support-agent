@@ -48,21 +48,27 @@ ORDER_ID_RE = re.compile(r"ORD\d+", re.IGNORECASE)
 
 EXTRACT_ORDER_ID_PROMPT = """从用户消息里提取订单号（形如 ORD12345）。只输出订单号本身；没有则输出 NONE。"""
 
-GRADE_PROMPT = """你是检索质量评审。判断下面的检索文档是否足以回答用户问题。
+GRADE_PROMPT = """你是检索质量评审。判断下面的检索文档是否**包含回答用户问题所需的信息**。
 
 用户问题：{question}
 
 检索到的文档：
 {documents}
 
-只输出一个词：YES（文档足以给出有依据的回答）或 NO（不足以回答）。不要输出任何其他内容。"""
+判定标准（放宽）：
+- 只要文档中有与问题相关的实质信息（即使不完整、需要用户再补充细节），就判 YES。
+- 只有文档完全跑题、或与问题毫无关联时，才判 NO。
+- 不要因为"信息不完整"就判 NO——客服回答本来就可以只覆盖文档已有的部分。
+
+只输出一个词：YES 或 NO。不要输出任何其他内容。"""
 
 GENERATE_PROMPT = """你是「Dify」产品的技术支持客服。基于下面检索到的文档回答用户问题。
 
 规则：
 1. 只用文档里的信息回答，不要编造。
 2. 引用来源时标注文档给出的 URL。
-3. 如果文档不足以回答，只输出 [CANNOT_ANSWER] 这个标记，不要猜测或补充。
+3. 如果文档只覆盖了部分内容，就只回答被覆盖的部分，并明确说明哪些部分文档未提及。
+4. 不要输出任何占位符或标记（如 [CANNOT_ANSWER]），始终给出自然语言回复。
 
 用户问题：{question}
 
@@ -202,7 +208,11 @@ async def grade(state: AgentState, config: RunnableConfig) -> dict:
 
 
 async def generate(state: AgentState, config: RunnableConfig) -> dict:
-    """生成节点：流式输出回答（不 skip_stream，低 TTFT）；不足则输出 [CANNOT_ANSWER]。"""
+    """生成节点：流式输出回答（不打 skip_stream，低 TTFT）。
+
+    注意：检索不足的情况已由上游 grade 节点拦下（rewrite/escalate），
+    所以这里必定持有足够文档，不再需要"输出占位符让下游处理"的机制。
+    """
     model = _get_model(config)
     prompt = GENERATE_PROMPT.format(
         question=state["original_question"],
@@ -309,7 +319,7 @@ def route_after_grade(state: AgentState) -> Literal["generate", "rewrite", "esca
 
 
 def _build_knowledge_specialist():
-    """知识专家子图：SAQ → 检索 → 生成（prompt 级接地；「无法回答」→ 纠错/转人工）。"""
+    """知识专家子图：SAQ → 检索 → 生成前评分 →（相关）流式生成 /（不相关）纠错改写或转人工。"""
     g = StateGraph(AgentState)
     g.add_node("resolve_query", resolve_query)
     g.add_node("retrieve", retrieve)

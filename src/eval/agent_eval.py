@@ -59,9 +59,15 @@ def _last_ai(messages: list) -> str:
     return ""
 
 
-def check_success(task: dict, final_text: str, state: dict, nodes: set[str]) -> bool:
-    """按 expected outcome 判定任务是否成功（不比对轨迹形状）。"""
+def check_success(task: dict, final_text: str, state: dict, nodes: set[str], interrupted: bool) -> bool:
+    """按 expected outcome 判定任务是否成功（不比对轨迹形状）。
+
+    注意：HITL 中断时图挂起、终答尚未产生（人工回复要 resume 后才有）。
+    因此"期望转人工 + 确实中断"应判成功，不能因 final_text 为空判失败。
+    """
     s = task["success"]
+    if interrupted and task["handoff"]:
+        return True
     if s == "order_status_returned":
         return "订单" in final_text and ("状态" in final_text or "商品" in final_text)
     if s == "not_found_handled":
@@ -124,6 +130,9 @@ async def run_task(task: dict) -> dict:
     final_state = dict(snapshot.values)
     final_text = _last_ai(final_state.get("messages", []))
 
+    # 兜底断言：终答绝不能是内部占位符（曾出现过 generate 输出 [CANNOT_ANSWER] 直连用户）
+    leaked_marker = "[CANNOT_ANSWER]" in final_text
+
     expected_nodes = {TOOL_TO_NODE[t] for t in task["tools"] if t in TOOL_TO_NODE}
     actual_action_nodes = {n for n in visited if n in set(TOOL_TO_NODE.values())}
 
@@ -135,7 +144,9 @@ async def run_task(task: dict) -> dict:
         "steps": len(nodes),
         "ttft": ttft,
         "e2e": total,
-        "success": check_success(task, final_text, final_state, visited),
+        "success": check_success(task, final_text, final_state, visited, "__interrupt__" in visited)
+        and not leaked_marker,
+        "marker_leaked": leaked_marker,
         "route_ok": final_state.get("intent") == task["route"],
         "action_ok": actual_action_nodes == expected_nodes,
         "expected_nodes": sorted(expected_nodes),
