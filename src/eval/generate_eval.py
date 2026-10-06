@@ -85,17 +85,27 @@ async def eval_transfer(negatives: list[dict]) -> tuple[int, int]:
     return ok, len(negatives)
 
 
-async def eval_answerable(items: list[dict]) -> tuple[int, int, int, int]:
-    """对可回答问题：引用准确率（机械）+ 幻觉率（LLM judge）。"""
+async def eval_answerable(items: list[dict]) -> tuple[int, int, int, int, int]:
+    """对可回答问题：转人工率 + 引用准确率（机械）+ 幻觉率（LLM judge，仅针对实际回答）。
+
+    关键：诚实拒答（转人工）不算幻觉——幻觉率只在"实际给出的回答"里统计，
+    否则自验证把不确定答案转人工的行为会被误判成幻觉。
+    """
     cite_ok = cite_total = 0
     faithful_ok = faithful_total = 0
+    escalated = 0
     model = get_model(settings.DEFAULT_MODEL)
     for g in items:
         result = await _run(g["question"])
         answer = _last_ai(result["messages"])
         docs = result.get("documents", [])
-        doc_urls = {d["url"] for d in docs}
 
+        # 转人工（诚实拒答）单列，不参与幻觉率
+        if "转接人工" in answer:
+            escalated += 1
+            continue
+
+        doc_urls = {d["url"] for d in docs}
         for u in _cited_urls(answer):
             cite_total += 1
             if u in doc_urls:
@@ -109,7 +119,7 @@ async def eval_answerable(items: list[dict]) -> tuple[int, int, int, int]:
         faithful_total += 1
         if raw.startswith("yes"):
             faithful_ok += 1
-    return cite_ok, cite_total, faithful_ok, faithful_total
+    return cite_ok, cite_total, faithful_ok, faithful_total, escalated
 
 
 async def main() -> None:
@@ -122,16 +132,17 @@ async def main() -> None:
         print(f"无效参数 {sys.argv[1]!r}，应为整数"); return
     limit = max(1, limit)
     items = _load(GOLDEN)[:limit]  # 子集，控制 LLM judge 耗时
-    cite_ok, cite_total, faithful_ok, faithful_n = await eval_answerable(items)
+    cite_ok, cite_total, faithful_ok, faithful_n, escalated = await eval_answerable(items)
 
     print("=== 生成端指标 ===")
-    print(f"转人工/闲聊准确率: {transfer_ok}/{transfer_n} = {transfer_ok / transfer_n:.4f}")
+    print(f"转人工/闲聊准确率(负样本): {transfer_ok}/{transfer_n} = {transfer_ok / transfer_n:.4f}")
+    print(f"转人工率(可回答问题): {escalated}/{len(items)} = {escalated / len(items):.4f}")
     if cite_total:
         print(f"引用准确率: {cite_ok}/{cite_total} = {cite_ok / cite_total:.4f}")
     else:
         print("引用准确率: 无引用（N/A）")
     hallu = 1 - faithful_ok / faithful_n if faithful_n else 0.0
-    print(f"幻觉率(1-faithful): {hallu:.4f}  (faithful {faithful_ok}/{faithful_n})")
+    print(f"幻觉率(实际回答中): {hallu:.4f}  (faithful {faithful_ok}/{faithful_n})")
 
 
 if __name__ == "__main__":

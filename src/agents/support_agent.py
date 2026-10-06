@@ -170,17 +170,17 @@ async def route(state: AgentState, config: RunnableConfig) -> dict:
     return {"intent": intent}
 
 
-def route_intent(state: AgentState) -> Literal["resolve_query", "order_lookup", "complaint_handle", "chitchat", "escalate"]:
+def route_intent(state: AgentState) -> Literal["knowledge", "order", "complaint", "chitchat", "escalate"]:
     intent = state["intent"]
     if intent == "order":
-        return "order_lookup"
+        return "order"
     if intent == "complaint":
-        return "complaint_handle"
+        return "complaint"
     if intent == "chitchat":
         return "chitchat"
     if intent == "escalate":
         return "escalate"
-    return "resolve_query"
+    return "knowledge"
 
 
 async def retrieve(state: AgentState, config: RunnableConfig) -> dict:
@@ -285,47 +285,66 @@ def route_after_verify(state: AgentState) -> Literal["commit", "escalate"]:
     return "commit" if state["verified"] else "escalate"
 
 
+def _build_knowledge_specialist():
+    """知识专家子图：SAQ → Corrective RAG → 自验证。独立编译，可单独替换/测试。"""
+    g = StateGraph(AgentState)
+    g.add_node("resolve_query", resolve_query)
+    g.add_node("retrieve", retrieve)
+    g.add_node("grade", grade)
+    g.add_node("generate", generate)
+    g.add_node("verify", verify)
+    g.add_node("commit", commit)
+    g.add_node("rewrite", rewrite)
+    g.add_node("escalate", escalate)
+    g.set_entry_point("resolve_query")
+    g.add_edge("resolve_query", "retrieve")
+    g.add_edge("retrieve", "grade")
+    g.add_conditional_edges(
+        "grade", route_after_grade, {"generate": "generate", "rewrite": "rewrite", "escalate": "escalate"}
+    )
+    g.add_edge("rewrite", "retrieve")
+    g.add_edge("generate", "verify")
+    g.add_conditional_edges("verify", route_after_verify, {"commit": "commit", "escalate": "escalate"})
+    g.add_edge("commit", END)
+    g.add_edge("escalate", END)
+    return g.compile()
+
+
+def _build_tool_specialist(node_name: str, node_fn):
+    """单节点工具专家子图（订单/工单）。"""
+    g = StateGraph(AgentState)
+    g.add_node(node_name, node_fn)
+    g.set_entry_point(node_name)
+    g.add_edge(node_name, END)
+    return g.compile()
+
+
+# Supervisor：意图路由 → 分发到各专家子图（多 Agent 协作）
 graph = StateGraph(AgentState)
 graph.add_node("prepare", prepare)
 graph.add_node("route", route)
-graph.add_node("resolve_query", resolve_query)
-graph.add_node("retrieve", retrieve)
-graph.add_node("grade", grade)
-graph.add_node("generate", generate)
-graph.add_node("verify", verify)
-graph.add_node("commit", commit)
-graph.add_node("rewrite", rewrite)
-graph.add_node("escalate", escalate)
+graph.add_node("knowledge", _build_knowledge_specialist())
+graph.add_node("order", _build_tool_specialist("order_lookup", order_lookup))
+graph.add_node("complaint", _build_tool_specialist("complaint_handle", complaint_handle))
 graph.add_node("chitchat", chitchat)
-graph.add_node("order_lookup", order_lookup)
-graph.add_node("complaint_handle", complaint_handle)
+graph.add_node("escalate", escalate)
 graph.set_entry_point("prepare")
 graph.add_edge("prepare", "route")
 graph.add_conditional_edges(
     "route",
     route_intent,
     {
-        "resolve_query": "resolve_query",
-        "order_lookup": "order_lookup",
-        "complaint_handle": "complaint_handle",
+        "knowledge": "knowledge",
+        "order": "order",
+        "complaint": "complaint",
         "chitchat": "chitchat",
         "escalate": "escalate",
     },
 )
-graph.add_edge("resolve_query", "retrieve")
-graph.add_edge("retrieve", "grade")
-graph.add_conditional_edges(
-    "grade",
-    route_after_grade,
-    {"generate": "generate", "rewrite": "rewrite", "escalate": "escalate"},
-)
-graph.add_edge("rewrite", "retrieve")
-graph.add_edge("generate", "verify")
-graph.add_conditional_edges("verify", route_after_verify, {"commit": "commit", "escalate": "escalate"})
-graph.add_edge("commit", END)
-graph.add_edge("escalate", END)
+graph.add_edge("knowledge", END)
+graph.add_edge("order", END)
+graph.add_edge("complaint", END)
 graph.add_edge("chitchat", END)
-graph.add_edge("order_lookup", END)
-graph.add_edge("complaint_handle", END)
+graph.add_edge("escalate", END)
 
 support_agent = graph.compile()
