@@ -30,6 +30,16 @@ sys.stdout.reconfigure(encoding="utf-8")
 ROOT = Path(__file__).resolve().parents[2]
 TASKS = ROOT / "data" / "golden" / "agent_tasks.jsonl"
 
+# 假设的线上流量分布（用于加权总体成功率；不是"均匀"，而是有偏才有代表性）
+# 依据：企业知识库客服以知识问答为主，订单次之，闲聊/投诉较少。
+ASSUMED_TRAFFIC = {
+    "kb": 0.50,
+    "order": 0.25,
+    "chitchat": 0.12,
+    "complaint": 0.08,
+    "escalate": 0.05,
+}
+
 # 期望工具 → 实际会运行的节点名（当前架构下"工具"是节点内函数，按节点判定）
 TOOL_TO_NODE = {
     "lookup_knowledge_base": "retrieve",
@@ -55,7 +65,11 @@ def check_success(task: dict, final_text: str, state: dict, nodes: set[str]) -> 
     if s == "order_status_returned":
         return "订单" in final_text and ("状态" in final_text or "商品" in final_text)
     if s == "not_found_handled":
-        return "未找到订单" in final_text
+        # Tool Outcome Handling：工具返回"未找到"时，必须如实告知，
+        # 绝不能编造"已发货/正在配送"（这是最典型的 Agent 失败模式）
+        handled = ("未找到" in final_text) or ("没有找到" in final_text)
+        fabricated = any(k in final_text for k in ("正在配送", "已发货", "预计送达"))
+        return handled and not fabricated
     if s == "asked_for_order_id":
         return "请提供订单号" in final_text
     if s == "grounded_answer":
@@ -187,6 +201,11 @@ async def main() -> None:
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
 
+    # 分层报告：每类单独统计（类内可比；样本≥15 才有参考价值）
+    by_route: dict[str, list[dict]] = {}
+    for r, t in zip(results, tasks):
+        by_route.setdefault(t["route"], []).append(r)
+
     print("\n=== Agent 指标 ===")
     print(f"Task Success Rate : {succ}/{n} = {succ / n:.4f}   <-- 主指标")
     print(f"Route Accuracy    : {route}/{n} = {route / n:.4f}")
@@ -194,6 +213,16 @@ async def main() -> None:
     print(f"Handoff Precision : {precision:.4f}  (tp={tp} fp={fp})")
     print(f"Handoff Recall    : {recall:.4f}  (fn={fn})")
     print(f"Avg Steps/Task    : {statistics.mean(steps):.2f}")
+
+    print("\n--- 分层成功率（类内可比）---")
+    total_w = sum(ASSUMED_TRAFFIC.values())
+    weighted = 0.0
+    for route, rs in sorted(by_route.items()):
+        s = sum(x["success"] for x in rs) / len(rs)
+        w = ASSUMED_TRAFFIC.get(route, 0.0) / total_w
+        weighted += s * w
+        print(f"  {route:10s} {sum(x['success'] for x in rs):2d}/{len(rs):2d} = {s:.4f}  (假设流量占比 {w:.0%})")
+    print(f"  {'加权总体':10s}          = {weighted:.4f}   <-- 按假设流量分布加权")
     if ttfts:
         print(f"TTFT  P50/P95     : {pct(ttfts, 50):.2f}s / {pct(ttfts, 95):.2f}s")
     if e2es:
