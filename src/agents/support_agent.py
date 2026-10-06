@@ -53,7 +53,7 @@ GENERATE_PROMPT = """你是「Dify」产品的技术支持客服。基于下面�
 规则：
 1. 只用文档里的信息回答，不要编造。
 2. 引用来源时标注文档给出的 URL。
-3. 如果文档不足以回答，只输出「无法回答」四个字，不要猜测或补充。
+3. 如果文档不足以回答，只输出 [CANNOT_ANSWER] 这个标记，不要猜测或补充。
 
 用户问题：{question}
 
@@ -84,7 +84,6 @@ class AgentState(MessagesState, total=False):
     intent: str  # kb / order / complaint / chitchat / escalate
     documents: list[dict]
     rewrite_count: int
-    draft_answer: str  # generate 草稿，非「无法回答」时 commit 入 messages
     order_id: str  # 订单号（实体抽取结果）
 
 
@@ -177,19 +176,14 @@ async def retrieve(state: AgentState, config: RunnableConfig) -> dict:
 
 
 async def generate(state: AgentState, config: RunnableConfig) -> dict:
-    """生成节点：prompt 强制"只用文档、不足则输出「无法回答」"，一步同时完成评分+接地。"""
+    """生成节点：流式输出回答（不 skip_stream，低 TTFT）；不足则输出 [CANNOT_ANSWER]。"""
     model = _get_model(config)
     prompt = GENERATE_PROMPT.format(
         question=state["original_question"],
         documents=format_documents(state["documents"]),
     )
-    response = await model.with_config(tags=["skip_stream"]).ainvoke([SystemMessage(prompt)])
-    return {"draft_answer": str(response.content)}
-
-
-def commit(state: AgentState, config: RunnableConfig) -> dict:
-    """把草稿写入 messages 交付给用户。"""
-    return {"messages": [AIMessage(content=state["draft_answer"])]}
+    response = await model.ainvoke([SystemMessage(prompt)])
+    return {"messages": [response]}
 
 
 async def rewrite(state: AgentState, config: RunnableConfig) -> dict:
@@ -212,7 +206,7 @@ def escalate(state: AgentState, config: RunnableConfig) -> dict:
     """
     ticket_id = create_ticket("人工支持", state["original_question"][:80])
     human_reply = interrupt(f"该问题已转接人工客服（工单 {ticket_id}），请稍候。")
-    return {"messages": [AIMessage(content=f"[人工客服回复] {human_reply}")]}
+    return {"messages": [AIMessage(content=f"[人工客服回复] {str(human_reply or '已处理')}")]}
 
 
 def chitchat(state: AgentState, config: RunnableConfig) -> dict:
@@ -276,13 +270,14 @@ def complaint_handle(state: AgentState, config: RunnableConfig) -> dict:
     """投诉处理：创建工单（工具）+ interrupt 转人工（HITL）。"""
     ticket_id = create_ticket("投诉", state["original_question"][:80])
     human_reply = interrupt(f"非常抱歉给您带来不便。已创建工单 {ticket_id} 并转接人工客服，请稍候。")
-    return {"messages": [AIMessage(content=f"[人工客服回复] {human_reply}")]}
+    return {"messages": [AIMessage(content=f"[人工客服回复] {str(human_reply or '已处理')}")]}
 
 
-def route_after_generate(state: AgentState) -> Literal["commit", "rewrite", "escalate"]:
-    """生成后路由：正常 → commit；「无法回答」→ 纠正式改写或转人工（防死循环）。"""
-    if "无法回答" not in state["draft_answer"]:
-        return "commit"
+def route_after_generate(state: AgentState) -> Literal["end", "rewrite", "escalate"]:
+    """生成后路由：正常 → end；[CANNOT_ANSWER] → 纠正式改写或转人工（防死循环）。"""
+    last = str(state["messages"][-1].content).strip()
+    if not last.startswith("[CANNOT_ANSWER]"):
+        return "end"
     if state["rewrite_count"] < MAX_REWRITES:
         return "rewrite"
     return "escalate"
@@ -294,17 +289,15 @@ def _build_knowledge_specialist():
     g.add_node("resolve_query", resolve_query)
     g.add_node("retrieve", retrieve)
     g.add_node("generate", generate)
-    g.add_node("commit", commit)
     g.add_node("rewrite", rewrite)
     g.add_node("escalate", escalate)
     g.set_entry_point("resolve_query")
     g.add_edge("resolve_query", "retrieve")
     g.add_edge("retrieve", "generate")
     g.add_conditional_edges(
-        "generate", route_after_generate, {"commit": "commit", "rewrite": "rewrite", "escalate": "escalate"}
+        "generate", route_after_generate, {"end": END, "rewrite": "rewrite", "escalate": "escalate"}
     )
     g.add_edge("rewrite", "retrieve")
-    g.add_edge("commit", END)
     g.add_edge("escalate", END)
     return g.compile()
 
