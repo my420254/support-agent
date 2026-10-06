@@ -16,7 +16,7 @@ from qdrant_client.models import PointStruct
 
 from eval.metrics import hit_at_k, ndcg_at_k, reciprocal_rank, unique_doc_ids
 from ingestion.chunker import chunk_markdown
-from retrieval.embedder import Embedder
+from retrieval.embedder import LocalEmbedder
 from retrieval.qdrant_store import QdrantStore
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -81,7 +81,7 @@ def eval_dense(store: QdrantStore, embedder: Embedder, golden: list[dict], k: in
 def main() -> None:
     corpus = load_jsonl(CORPUS)
     golden = load_jsonl(GOLDEN)
-    embedder = Embedder()
+    embedder = LocalEmbedder()  # 消融实验固定用本地模型，避免 API 计费与波动
     print(f"语料 {len(corpus)} 篇 | 评测 {len(golden)} 题 | 共 {len(CONFIGS)} 组配置\n")
 
     rows = []

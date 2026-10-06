@@ -11,7 +11,7 @@ RRF（Reciprocal Rank Fusion）：两路各自按名次贡献 1/(k+rank)，加�
 import jieba
 from rank_bm25 import BM25Okapi
 
-from retrieval.embedder import Embedder
+from retrieval.embedder import get_embedder
 from retrieval.qdrant_store import QdrantStore
 
 RRF_K = 60  # RRF 平滑常数（原论文/ES/Qdrant 默认；60~100 不敏感）
@@ -24,7 +24,7 @@ class HybridRetriever:
     """dense + BM25 混合检索。首次使用从 Qdrant 拉全量 chunk 建 BM25 索引（几秒）。"""
 
     def __init__(self):
-        self.embedder = Embedder()
+        self.embedder = get_embedder()
         self.store = QdrantStore()
         self.chunks: list = []
         self.bm25: BM25Okapi | None = None

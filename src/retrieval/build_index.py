@@ -8,7 +8,7 @@ from pathlib import Path
 from qdrant_client.models import PointStruct
 
 from ingestion.chunker import chunk_markdown
-from retrieval.embedder import Embedder
+from retrieval.embedder import get_embedder
 from retrieval.qdrant_store import QdrantStore
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,7 +30,7 @@ def build() -> None:
     print(f"{len(docs)} docs -> {len(chunks)} chunks")
 
     t0 = time.time()
-    embedder = Embedder()
+    embedder = get_embedder()
     vecs = embedder.embed_documents([c["embed_text"] for c in chunks])
     print(f"embedded {len(vecs)} chunks in {time.time() - t0:.1f}s (dim={embedder.dim})")
 

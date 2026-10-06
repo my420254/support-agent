@@ -93,6 +93,12 @@ class Settings(BaseSettings):
 
     QDRANT_URL: str = "http://127.0.0.1:6333"  # Docker 内设为 http://qdrant:6333
 
+    # Embedding provider: local（本地 bge，离线可跑）| remote（OpenAI 兼容 API，镜像可瘦身）
+    EMBEDDING_PROVIDER: str = "local"
+    EMBEDDING_API_BASE: str = "https://api.siliconflow.cn/v1"
+    EMBEDDING_API_KEY: SecretStr | None = None
+    EMBEDDING_MODEL: str | None = None  # 如 BAAI/bge-m3
+
     # PostgreSQL Configuration (used from P5; P0-P4 run on SQLite)
     POSTGRES_USER: str | None = None
     POSTGRES_PASSWORD: SecretStr | None = None

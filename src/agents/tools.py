@@ -5,17 +5,17 @@ P3 的 Agentic 图直接调用 search_knowledge_base（显式节点），
 P5 多 agent（订单/退款专家）会重新引入 function calling。
 """
 
-from retrieval.embedder import Embedder
+from retrieval.embedder import get_embedder
 from retrieval.qdrant_store import QdrantStore
 
-_embedder: Embedder | None = None
+_embedder = None
 _store: QdrantStore | None = None
 
 
-def _get_retrieval() -> tuple[Embedder, QdrantStore]:
+def _get_retrieval():
     global _embedder, _store
     if _embedder is None:
-        _embedder = Embedder()
+        _embedder = get_embedder()
     if _store is None:
         _store = QdrantStore()
     return _embedder, _store
