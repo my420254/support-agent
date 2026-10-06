@@ -44,6 +44,8 @@ def get_model(model_name: AllModelEnum, /) -> ModelT:
             streaming=True,
             openai_api_base="https://api.deepseek.com",
             openai_api_key=settings.DEEPSEEK_API_KEY,
+            max_retries=3,  # 应对 DeepSeek API 瞬断/流式中断
+            timeout=60,
         )
     if model_name in OpenAICompatibleName:
         if not settings.COMPATIBLE_BASE_URL or not settings.COMPATIBLE_MODEL:

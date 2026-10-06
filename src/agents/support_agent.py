@@ -1,9 +1,9 @@
 """企业知识库智能客服 Agent（Agentic RAG + 意图路由）。
 
 图结构：
-    prepare → route ─(kb)→ retrieve → grade ─(相关)→ generate → END
-                   │                      └(不相关 & 改写<2)→ rewrite → retrieve
-                   │                      └(不相关 & 改写≥2)→ escalate → END
+    prepare → route ─(kb)→ resolve_query → retrieve → grade ─(相关)→ generate → END
+                   │                                        └(不相关&<2)→ rewrite → retrieve
+                   │                                        └(不相关&≥2)→ escalate → END
                    ├(chitchat)→ chitchat → END
                    └(escalate)→ escalate → END
 
@@ -18,6 +18,7 @@
 所以意图/评分都用「纯文本 + 解析」，不用 structured output。
 """
 
+import re
 from typing import Literal
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -25,7 +26,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, MessagesState, StateGraph
 
-from agents.tools import format_documents, search_knowledge_base_hybrid
+from agents.tools import create_ticket, format_documents, query_order, search_knowledge_base_hybrid
 from core import get_model, settings
 
 MAX_REWRITES = 2  # 纠正式改写上限（业界常见 2-3 次，防死循环）
@@ -33,10 +34,14 @@ MAX_REWRITES = 2  # 纠正式改写上限（业界常见 2-3 次，防死循环�
 ROUTE_PROMPT = """你是客服意图分类器。判断用户这句话属于哪类：
 
 - kb：与 Dify 产品功能/使用/部署/配置/插件相关，需要查知识库回答
+- order：查询订单状态、物流、退换货进度（通常带订单号）
+- complaint：投诉、退款、赔偿等诉求
 - chitchat：寒暄、闲聊、问候、感谢（如"你好""谢谢""在吗"）
-- escalate：投诉、辱骂，或超出客服范围（咨询其他产品、要求转人工等）
+- escalate：辱骂，或完全超出客服范围（咨询其他产品等）
 
-只输出一个词：kb / chitchat / escalate。"""
+只输出一个词：kb / order / complaint / chitchat / escalate。"""
+
+ORDER_ID_RE = re.compile(r"ORD\d+", re.IGNORECASE)
 
 GRADE_PROMPT = """你是检索质量评审。判断下面的检索文档是否足以回答用户问题。
 
@@ -59,9 +64,30 @@ GENERATE_PROMPT = """你是「Dify」产品的技术支持客服。基于下面�
 检索到的文档：
 {documents}"""
 
+VERIFY_PROMPT = """你是答案审核员。判断下面的回答中的关键事实是否都能在文档上下文中找到依据（没有编造）。
+
+注意：礼貌用语、格式、引导语不算编造；只关心事实性陈述是否有据可查。
+
+文档上下文：
+{documents}
+
+待审回答：
+{answer}
+
+只输出一个词：YES（关键事实都有据可查）或 NO（回答包含编造/无依据的事实）。"""
+
 REWRITE_PROMPT = """原查询在知识库中检索效果不佳。请把它改写成一个更利于检索的查询（更具体、关键词更明确、去掉口语和无关词）。只输出改写后的查询，不要解释。"""
 
-ESCALATE_TEXT = "抱歉，我在知识库中没能找到足以可靠回答这个问题的内容，已为您转接人工客服，请稍候。"
+SAQ_PROMPT = """把用户最新这句话改写成一句完整、独立、可检索的问句（结合对话历史补全省略的主语和指代）。
+
+对话历史：
+{history}
+
+用户最新消息：{last}
+
+只输出改写后的问句。"""
+
+ESCALATE_TEXT = "抱歉，这个问题需要人工客服为您进一步处理，已为您转接人工客服，请稍候。"
 
 CHITCHAT_TEXT = "你好！我是 Dify 产品的智能客服，可以帮你解答 Dify 的使用、部署、配置、插件开发等问题。请问有什么可以帮你？"
 
@@ -75,6 +101,8 @@ class AgentState(MessagesState, total=False):
     documents: list[dict]
     relevant: bool
     rewrite_count: int
+    draft_answer: str  # generate 的草稿，verify 通过后才入 messages
+    verified: bool  # 自验证结果
 
 
 def _get_model(config: RunnableConfig) -> BaseChatModel:
@@ -88,10 +116,35 @@ def _last_human(messages: list) -> str:
     return ""
 
 
+def _has_prior_turn(messages: list) -> bool:
+    """是否超过一轮对话（需要做指代消解）。"""
+    return sum(1 for m in messages if isinstance(m, HumanMessage)) > 1
+
+
+async def _standalone_query(messages: list, config: RunnableConfig) -> str:
+    """SAQ：结合对话历史把最新消息改写成独立 query（补全省略/指代）。"""
+    model = _get_model(config)
+    history = "\n".join(f"{m.type}: {str(m.content)[:200]}" for m in messages[:-1])
+    resp = await model.ainvoke(
+        [SystemMessage(SAQ_PROMPT.format(history=history, last=str(messages[-1].content)))]
+    )
+    return str(resp.content).strip()
+
+
 def prepare(state: AgentState, config: RunnableConfig) -> dict:
-    """入口：取最新用户消息作为初始问题，重置改写计数。"""
+    """入口：取最新用户消息作为原始问题（original_question 保持字面，不被改写污染）。"""
     q = _last_human(state["messages"])
     return {"question": q, "original_question": q, "rewrite_count": 0}
+
+
+async def resolve_query(state: AgentState, config: RunnableConfig) -> dict:
+    """多轮时把 question 改写成独立 query（SAQ），仅用于检索；不动 original_question。
+
+    放在 route 之后：只有意图为 kb 才走这里，闲聊/投诉在 route 已短路，不会被 SAQ 误改。
+    """
+    if _has_prior_turn(state["messages"]):
+        return {"question": await _standalone_query(state["messages"], config)}
+    return {}
 
 
 async def route(state: AgentState, config: RunnableConfig) -> dict:
@@ -104,7 +157,11 @@ async def route(state: AgentState, config: RunnableConfig) -> dict:
         [SystemMessage(ROUTE_PROMPT), HumanMessage(state["original_question"])]
     )
     raw = str(response.content).strip().lower()
-    if "chitchat" in raw:
+    if "order" in raw:
+        intent = "order"
+    elif "complaint" in raw:
+        intent = "complaint"
+    elif "chitchat" in raw:
         intent = "chitchat"
     elif "escalate" in raw:
         intent = "escalate"
@@ -113,13 +170,17 @@ async def route(state: AgentState, config: RunnableConfig) -> dict:
     return {"intent": intent}
 
 
-def route_intent(state: AgentState) -> Literal["retrieve", "chitchat", "escalate"]:
+def route_intent(state: AgentState) -> Literal["resolve_query", "order_lookup", "complaint_handle", "chitchat", "escalate"]:
     intent = state["intent"]
+    if intent == "order":
+        return "order_lookup"
+    if intent == "complaint":
+        return "complaint_handle"
     if intent == "chitchat":
         return "chitchat"
     if intent == "escalate":
         return "escalate"
-    return "retrieve"
+    return "resolve_query"
 
 
 async def retrieve(state: AgentState, config: RunnableConfig) -> dict:
@@ -140,14 +201,30 @@ async def grade(state: AgentState, config: RunnableConfig) -> dict:
 
 
 async def generate(state: AgentState, config: RunnableConfig) -> dict:
-    """生成节点：基于检索文档回答原始问题，标注来源。"""
+    """生成节点：基于检索文档回答原始问题，先写成草稿（draft_answer），待 verify 通过。"""
     model = _get_model(config)
     prompt = GENERATE_PROMPT.format(
         question=state["original_question"],
         documents=format_documents(state["documents"]),
     )
     response = await model.ainvoke([SystemMessage(prompt)])
-    return {"messages": [response]}
+    return {"draft_answer": str(response.content)}
+
+
+async def verify(state: AgentState, config: RunnableConfig) -> dict:
+    """自验证（Self-Reflection）：检查草稿是否被检索文档支撑，防幻觉。"""
+    model = _get_model(config)
+    prompt = VERIFY_PROMPT.format(
+        documents=format_documents(state["documents"]),
+        answer=state["draft_answer"],
+    )
+    response = await model.ainvoke([SystemMessage(prompt)])
+    return {"verified": str(response.content).strip().lower().startswith("yes")}
+
+
+def commit(state: AgentState, config: RunnableConfig) -> dict:
+    """验证通过：把草稿写入 messages 交付给用户。"""
+    return {"messages": [AIMessage(content=state["draft_answer"])]}
 
 
 async def rewrite(state: AgentState, config: RunnableConfig) -> dict:
@@ -172,6 +249,30 @@ def chitchat(state: AgentState, config: RunnableConfig) -> dict:
     return {"messages": [AIMessage(content=CHITCHAT_TEXT)]}
 
 
+def order_lookup(state: AgentState, config: RunnableConfig) -> dict:
+    """订单查询节点：实体抽取（订单号）→ 调订单工具 → 返回结果。"""
+    m = ORDER_ID_RE.search(state["original_question"])
+    if not m:
+        return {
+            "messages": [
+                AIMessage(content="请提供订单号（格式如 ORD12345），我来帮您查询订单状态。")
+            ]
+        }
+    return {"messages": [AIMessage(content=query_order(m.group(0)))]}
+
+
+def complaint_handle(state: AgentState, config: RunnableConfig) -> dict:
+    """投诉处理节点：创建工单（工具调用）+ 转人工。"""
+    ticket_id = create_ticket("投诉", state["original_question"][:80])
+    return {
+        "messages": [
+            AIMessage(
+                content=f"非常抱歉给您带来不便。已为您创建工单 {ticket_id} 并转接人工客服优先处理，请稍候。"
+            )
+        ]
+    }
+
+
 def route_after_grade(state: AgentState) -> Literal["generate", "rewrite", "escalate"]:
     if state["relevant"]:
         return "generate"
@@ -180,22 +281,38 @@ def route_after_grade(state: AgentState) -> Literal["generate", "rewrite", "esca
     return "escalate"
 
 
+def route_after_verify(state: AgentState) -> Literal["commit", "escalate"]:
+    return "commit" if state["verified"] else "escalate"
+
+
 graph = StateGraph(AgentState)
 graph.add_node("prepare", prepare)
 graph.add_node("route", route)
+graph.add_node("resolve_query", resolve_query)
 graph.add_node("retrieve", retrieve)
 graph.add_node("grade", grade)
 graph.add_node("generate", generate)
+graph.add_node("verify", verify)
+graph.add_node("commit", commit)
 graph.add_node("rewrite", rewrite)
 graph.add_node("escalate", escalate)
 graph.add_node("chitchat", chitchat)
+graph.add_node("order_lookup", order_lookup)
+graph.add_node("complaint_handle", complaint_handle)
 graph.set_entry_point("prepare")
 graph.add_edge("prepare", "route")
 graph.add_conditional_edges(
     "route",
     route_intent,
-    {"retrieve": "retrieve", "chitchat": "chitchat", "escalate": "escalate"},
+    {
+        "resolve_query": "resolve_query",
+        "order_lookup": "order_lookup",
+        "complaint_handle": "complaint_handle",
+        "chitchat": "chitchat",
+        "escalate": "escalate",
+    },
 )
+graph.add_edge("resolve_query", "retrieve")
 graph.add_edge("retrieve", "grade")
 graph.add_conditional_edges(
     "grade",
@@ -203,8 +320,12 @@ graph.add_conditional_edges(
     {"generate": "generate", "rewrite": "rewrite", "escalate": "escalate"},
 )
 graph.add_edge("rewrite", "retrieve")
-graph.add_edge("generate", END)
+graph.add_edge("generate", "verify")
+graph.add_conditional_edges("verify", route_after_verify, {"commit": "commit", "escalate": "escalate"})
+graph.add_edge("commit", END)
 graph.add_edge("escalate", END)
 graph.add_edge("chitchat", END)
+graph.add_edge("order_lookup", END)
+graph.add_edge("complaint_handle", END)
 
 support_agent = graph.compile()

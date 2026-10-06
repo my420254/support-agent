@@ -14,6 +14,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -28,7 +29,9 @@ NEGATIVE = ROOT / "data" / "golden" / "negative.jsonl"
 
 URL_RE = re.compile(r"https?://[^\s\)\]），。]+")
 
-FAITHFUL_PROMPT = """判断下面的回答是否完全基于给定的文档上下文（没有编造文档之外的事实）。
+FAITHFUL_PROMPT = """判断下面的回答中的关键事实是否都能在文档上下文中找到依据（即没有编造文档之外的事实）。
+
+注意：礼貌用语、格式、引导语（如"建议参考官方文档"）不算编造，只关心事实性陈述是否有据可查。
 
 文档上下文：
 {documents}
@@ -36,7 +39,7 @@ FAITHFUL_PROMPT = """判断下面的回答是否完全基于给定的文档上�
 回答：
 {answer}
 
-只输出一个词：YES（回答完全基于上下文，无编造）或 NO（回答包含编造/上下文之外的内容）。"""
+只输出一个词：YES（关键事实都有据可查，无编造）或 NO（回答包含编造/无依据的事实）。"""
 
 
 def _load(path: Path) -> list[dict]:
@@ -44,8 +47,16 @@ def _load(path: Path) -> list[dict]:
 
 
 async def _run(q: str) -> dict:
-    config = {"configurable": {"thread_id": "ge-" + q[:6]}}
-    return await support_agent.ainvoke({"messages": [HumanMessage(content=q)]}, config=config)
+    """跑一次 agent，带退避重试（应对 LLM API 瞬断）。"""
+    config = {"configurable": {"thread_id": "ge-" + uuid4().hex}}
+    last_err = None
+    for attempt in range(3):
+        try:
+            return await support_agent.ainvoke({"messages": [HumanMessage(content=q)]}, config=config)
+        except Exception as e:
+            last_err = e
+            await asyncio.sleep(2 * (attempt + 1))
+    raise last_err
 
 
 def _last_ai(messages: list) -> str:
@@ -90,12 +101,13 @@ async def eval_answerable(items: list[dict]) -> tuple[int, int, int, int]:
             if u in doc_urls:
                 cite_ok += 1
 
-        ctx = "\n\n".join(f"{d['title']}: {d['text'][:300]}" for d in docs)
+        ctx = "\n\n".join(f"{d['title']}: {d['text'][:800]}" for d in docs)
         resp = await model.ainvoke(
             [SystemMessage(FAITHFUL_PROMPT.format(documents=ctx, answer=answer[:2000]))]
         )
+        raw = str(resp.content).strip().lower()
         faithful_total += 1
-        if str(resp.content).strip().lower().startswith("yes"):
+        if raw.startswith("yes"):
             faithful_ok += 1
     return cite_ok, cite_total, faithful_ok, faithful_total
 
@@ -104,7 +116,12 @@ async def main() -> None:
     negatives = _load(NEGATIVE)
     transfer_ok, transfer_n = await eval_transfer(negatives)
 
-    items = _load(GOLDEN)[:15]  # 子集，控制 LLM judge 耗时
+    try:
+        limit = int(sys.argv[1]) if len(sys.argv) > 1 else 15
+    except ValueError:
+        print(f"无效参数 {sys.argv[1]!r}，应为整数"); return
+    limit = max(1, limit)
+    items = _load(GOLDEN)[:limit]  # 子集，控制 LLM judge 耗时
     cite_ok, cite_total, faithful_ok, faithful_n = await eval_answerable(items)
 
     print("=== 生成端指标 ===")
@@ -113,7 +130,8 @@ async def main() -> None:
         print(f"引用准确率: {cite_ok}/{cite_total} = {cite_ok / cite_total:.4f}")
     else:
         print("引用准确率: 无引用（N/A）")
-    print(f"幻觉率(1-faithful): {1 - faithful_ok / faithful_n:.4f}  (faithful {faithful_ok}/{faithful_n})")
+    hallu = 1 - faithful_ok / faithful_n if faithful_n else 0.0
+    print(f"幻觉率(1-faithful): {hallu:.4f}  (faithful {faithful_ok}/{faithful_n})")
 
 
 if __name__ == "__main__":

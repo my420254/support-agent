@@ -63,3 +63,27 @@ def format_documents(docs: list[dict]) -> str:
     for i, d in enumerate(docs, 1):
         parts.append(f"[文档{i}] 标题: {d['title']}\n来源: {d['url']}\n内容: {d['text']}")
     return "\n\n".join(parts)
+
+
+# --- 业务工具（mock 订单/工单系统；生产替换为真实 API）---
+
+_MOCK_ORDERS = {
+    "ORD12345": {"status": "已发货", "item": "Dify 企业版订阅", "eta": "2026-10-08"},
+    "ORD67890": {"status": "待付款", "item": "Dify 专业版订阅", "eta": None},
+}
+
+
+def query_order(order_id: str) -> str:
+    """查询订单状态（mock 订单系统）。生产替换为订单系统 API。"""
+    o = _MOCK_ORDERS.get(order_id.strip().upper())
+    if not o:
+        return f"未找到订单 {order_id}，请核对订单号后重试。"
+    eta = f"，预计送达 {o['eta']}" if o.get("eta") else ""
+    return f"订单 {order_id}：商品「{o['item']}」，状态「{o['status']}」{eta}。"
+
+
+def create_ticket(category: str, summary: str) -> str:
+    """创建工单（mock 工单系统），返回工单号。生产替换为工单系统 API。"""
+    from uuid import uuid4
+
+    return "TICKET-" + uuid4().hex[:6].upper()
