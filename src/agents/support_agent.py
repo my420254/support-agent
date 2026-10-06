@@ -29,7 +29,7 @@ from langgraph.store.base import BaseStore
 from langgraph.types import interrupt
 
 from agents.guardrails import detect_prompt_injection, mask_pii
-from agents.tools import create_ticket, format_documents, query_order, search_knowledge_base_hybrid
+from agents.tools import call_tool, format_documents, search_knowledge_base_hybrid
 from core import get_model, settings
 
 MAX_REWRITES = 2  # 纠正式改写上限（业界常见 2-3 次，防死循环）
@@ -240,8 +240,13 @@ def escalate(state: AgentState, config: RunnableConfig) -> dict:
     服务层检测到中断后返回提示给用户；人工坐席用同 thread_id 调 /invoke 时，
     服务端用 Command(resume=...) 唤醒这里，human_reply 拿到人工回复。
     """
-    ticket_id = create_ticket("人工支持", state["original_question"][:80])
-    human_reply = interrupt(f"该问题已转接人工客服（工单 {ticket_id}），请稍候。")
+    thread_id = config.get("configurable", {}).get("thread_id", "")
+    r = call_tool(
+        "create_ticket",
+        {"category": "人工支持", "summary": state["original_question"][:80]},
+        thread_id=thread_id,
+    )
+    human_reply = interrupt(f"该问题已转接人工客服（{r.to_text()}），请稍候。")
     return {"messages": [AIMessage(content=f"[人工客服回复] {str(human_reply or '已处理')}")]}
 
 
@@ -282,7 +287,10 @@ def route_order(state: AgentState) -> Literal["query_order", "ask_id"]:
 
 
 def query_order_node(state: AgentState, config: RunnableConfig) -> dict:
-    return {"messages": [AIMessage(content=query_order(state["order_id"]))]}
+    """经工具执行器查询订单（只读，可安全重试）。"""
+    thread_id = config.get("configurable", {}).get("thread_id", "")
+    r = call_tool("query_order", {"order_id": state["order_id"]}, thread_id=thread_id)
+    return {"messages": [AIMessage(content=r.to_text())]}
 
 
 def ask_id(state: AgentState, config: RunnableConfig) -> dict:
@@ -304,8 +312,13 @@ def _build_order_specialist():
 
 def complaint_handle(state: AgentState, config: RunnableConfig) -> dict:
     """投诉处理：创建工单（工具）+ interrupt 转人工（HITL）。"""
-    ticket_id = create_ticket("投诉", state["original_question"][:80])
-    human_reply = interrupt(f"非常抱歉给您带来不便。已创建工单 {ticket_id} 并转接人工客服，请稍候。")
+    thread_id = config.get("configurable", {}).get("thread_id", "")
+    r = call_tool(
+        "create_ticket",
+        {"category": "投诉", "summary": state["original_question"][:80]},
+        thread_id=thread_id,
+    )
+    human_reply = interrupt(f"非常抱歉给您带来不便。{r.to_text()}，并已转接人工客服，请稍候。")
     return {"messages": [AIMessage(content=f"[人工客服回复] {str(human_reply or '已处理')}")]}
 
 

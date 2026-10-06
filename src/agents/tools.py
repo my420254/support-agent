@@ -87,3 +87,26 @@ def create_ticket(category: str, summary: str) -> str:
     from uuid import uuid4
 
     return "TICKET-" + uuid4().hex[:6].upper()
+
+
+# --- 工具契约注册（单点执行器；详见 tool_runtime.py 的设计说明）---
+
+from agents.tool_runtime import RiskClass, ToolSpec, ToolResult, executor  # noqa: E402
+
+executor.register(ToolSpec(
+    name="lookup_knowledge_base", risk=RiskClass.READ, fn=search_knowledge_base_hybrid,
+    description="检索 Dify 知识库", timeout_s=15.0, max_attempts=2,
+))
+executor.register(ToolSpec(
+    name="query_order", risk=RiskClass.READ, fn=query_order,
+    description="查询订单状态", timeout_s=5.0, max_attempts=3,
+))
+executor.register(ToolSpec(
+    name="create_ticket", risk=RiskClass.WRITE, fn=create_ticket,
+    description="创建工单（写操作，需幂等）", timeout_s=5.0, max_attempts=2,
+))
+
+
+def call_tool(name: str, args: dict, *, thread_id: str = "", step: int = 0) -> ToolResult:
+    """经单点执行器调用工具（校验/幂等/重试/审计全在这里）。"""
+    return executor.execute(name, args, thread_id=thread_id, step=step)
