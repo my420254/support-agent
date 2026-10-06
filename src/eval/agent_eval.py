@@ -176,11 +176,27 @@ def pct(values: list[float], p: int) -> float:
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--repeat", type=int, default=1,
+        help="每个任务重复 k 次，用于测 pass@k / pass^k（Agent 运行一致性）",
+    )
+    parser.add_argument(
+        "--sample", type=int, default=None,
+        help="分层抽样：每类抽 N 个（保证各类都覆盖，而非文件前 N 个）",
+    )
     args = parser.parse_args()
 
     tasks = load_tasks()
     if args.limit:
         tasks = tasks[: args.limit]
+    if args.sample:
+        by_route: dict[str, list[dict]] = {}
+        for t in tasks:
+            by_route.setdefault(t["route"], []).append(t)
+        picked: list[dict] = []
+        for route in sorted(by_route):
+            picked.extend(by_route[route][: args.sample])
+        tasks = picked
 
     # 独立运行时 agent 没有 checkpointer（服务层启动时才注入），评测挂一个内存版
     from langgraph.checkpoint.memory import InMemorySaver
@@ -190,20 +206,28 @@ async def main() -> None:
     support_agent.checkpointer = InMemorySaver()
 
     results = []
-    for i, task in enumerate(tasks, 1):
-        try:
-            r = await run_task(task)
-        except Exception as e:
-            r = {"id": task["id"], "input": task["input"], "success": False,
-                 "error": f"{type(e).__name__}: {e}", "ttft": None, "e2e": 0, "steps": 0,
-                 "route_ok": False, "action_ok": False, "handoff_expected": task["handoff"],
-                 "handoff_actual": False, "nodes": []}
-        results.append(r)
-        mark = "✓" if r.get("success") else "✗"
-        err = f" ERR={r.get('error', '')[:60]}" if r.get("error") else ""
-        print(f"  [{i}/{len(tasks)}] {mark} {r['id']} {task['input'][:24]} "
-              f"| intent={r.get('intent')} steps={r.get('steps')} "
-              f"ttft={r.get('ttft') and round(r['ttft'], 2)}s{err}")
+    per_task: dict[str, list[bool]] = {}  # 每个任务的 k 次结果（pass^k 用）
+    total_runs = len(tasks) * args.repeat
+    run_i = 0
+    for task in tasks:
+        outcomes = []
+        for _ in range(args.repeat):
+            run_i += 1
+            try:
+                r = await run_task(task)
+            except Exception as e:
+                r = {"id": task["id"], "input": task["input"], "success": False,
+                     "error": f"{type(e).__name__}: {e}", "ttft": None, "e2e": 0, "steps": 0,
+                     "route_ok": False, "action_ok": False, "handoff_expected": task["handoff"],
+                     "handoff_actual": False, "nodes": []}
+            results.append(r)
+            outcomes.append(bool(r.get("success")))
+            mark = "✓" if r.get("success") else "✗"
+            err = f" ERR={r.get('error', '')[:60]}" if r.get("error") else ""
+            print(f"  [{run_i}/{total_runs}] {mark} {r['id']} {task['input'][:20]} "
+                  f"| intent={r.get('intent')} steps={r.get('steps')} "
+                  f"ttft={r.get('ttft') and round(r['ttft'], 2)}s{err}")
+        per_task[task["id"]] = outcomes
 
     n = len(results)
     succ = sum(r["success"] for r in results)
@@ -246,11 +270,23 @@ async def main() -> None:
     if e2es:
         print(f"E2E   P50/P95     : {pct(e2es, 50):.2f}s / {pct(e2es, 95):.2f}s")
 
+    if args.repeat > 1:
+        # pass@k：k 次里至少成功一次；pass^k：k 次全部成功（一致性，τ-bench 口径）
+        pass_at_k = sum(1 for o in per_task.values() if any(o)) / len(per_task)
+        pass_pow_k = sum(1 for o in per_task.values() if all(o)) / len(per_task)
+        print(f"\n--- 一致性（repeat={args.repeat}）---")
+        print(f"  pass@{args.repeat}  : {pass_at_k:.4f}  (k 次里至少成功一次)")
+        print(f"  pass^{args.repeat}  : {pass_pow_k:.4f}  (k 次全部成功 = 稳定性)  <-- 关键")
+        unstable = [tid for tid, o in per_task.items() if any(o) and not all(o)]
+        if unstable:
+            print(f"  不稳定任务({len(unstable)}): {unstable}")
+
     failed = [r for r in results if not r["success"]]
     if failed:
         print("\n失败任务（供 failure taxonomy）:")
         for r in failed:
-            print(f"  {r['id']}: {r['input'][:30]} | nodes={r.get('nodes')} | {r.get('final_text', '')[:60]}")
+            print(f"  {r['id']}: {r['input'][:30]} | exp={r.get('expected_nodes')} "
+                  f"act={r.get('actual_nodes')} | {r.get('final_text', '')[:60]}")
 
 
 if __name__ == "__main__":
