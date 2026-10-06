@@ -56,6 +56,17 @@ class HybridRetriever:
             "text": p["text"],
         }
 
+    def search_bm25(self, query: str, top_k: int = 4) -> list[dict]:
+        """仅 BM25 关键词检索（用于消融实验，量化 dense 与 BM25 各自贡献）。"""
+        scores = self.bm25.get_scores(list(jieba.cut(query)))
+        top_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+        out = []
+        for idx in top_idx:
+            d = self._format(self.chunks[idx])
+            d["score"] = round(float(scores[idx]), 4)
+            out.append(d)
+        return out
+
     def search(self, query: str, top_k: int = 4) -> list[dict]:
         # 1) dense 路：向量检索
         vec = self.embedder.embed_query(query)

@@ -25,11 +25,11 @@ def load_golden() -> list[dict]:
 
 def build_search(retriever: str):
     """返回一个 search(query, top_k) -> list[dict] 的检索函数。"""
-    if retriever == "hybrid":
+    if retriever in ("hybrid", "bm25"):
         from retrieval.hybrid import HybridRetriever
 
         hr = HybridRetriever()
-        return hr.search
+        return hr.search if retriever == "hybrid" else hr.search_bm25
     return search_knowledge_base
 
 
@@ -59,7 +59,7 @@ def evaluate(search=None, top_k: int = 10) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--retriever", choices=["dense", "hybrid"], default="dense")
+    parser.add_argument("--retriever", choices=["dense", "hybrid", "bm25"], default="dense")
     args = parser.parse_args()
 
     search = build_search(args.retriever)
