@@ -3,15 +3,15 @@
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
-# 用 127.0.0.1 而非 localhost：Windows 上 localhost 先解析到 IPv6(::1)，
-# 走慢路径导致检索 P99 高达 21s；127.0.0.1 走 IPv4 只要 ~50ms。
-DEFAULT_URL = "http://127.0.0.1:6333"
+from core.settings import settings
+
 DEFAULT_COLLECTION = "dify_docs"
 
 
 class QdrantStore:
-    def __init__(self, url: str = DEFAULT_URL, collection: str = DEFAULT_COLLECTION):
-        self.client = QdrantClient(url=url)
+    def __init__(self, url: str | None = None, collection: str = DEFAULT_COLLECTION):
+        # 默认走 settings.QDRANT_URL（本地 127.0.0.1，Docker 内 qdrant:6333）
+        self.client = QdrantClient(url=url or settings.QDRANT_URL)
         self.collection = collection
 
     def recreate(self, dim: int) -> None:

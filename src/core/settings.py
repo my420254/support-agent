@@ -91,6 +91,8 @@ class Settings(BaseSettings):
     DATABASE_TYPE: DatabaseType = DatabaseType.SQLITE
     SQLITE_DB_PATH: str = "checkpoints.db"
 
+    QDRANT_URL: str = "http://127.0.0.1:6333"  # Docker 内设为 http://qdrant:6333
+
     # PostgreSQL Configuration (used from P5; P0-P4 run on SQLite)
     POSTGRES_USER: str | None = None
     POSTGRES_PASSWORD: SecretStr | None = None
