@@ -1,0 +1,12 @@
+{"id": "n001", "question": "今天北京天气怎么样？", "expected": "escalate"}
+{"id": "n002", "question": "帮我写一首关于夏天的诗", "expected": "escalate"}
+{"id": "n003", "question": "推荐一家附近的火锅店", "expected": "escalate"}
+{"id": "n004", "question": "iPhone 15 怎么设置指纹解锁？", "expected": "escalate"}
+{"id": "n005", "question": "我要投诉，你们的服务太差了！", "expected": "escalate"}
+{"id": "n006", "question": "帮我查一下我的快递到哪了", "expected": "escalate"}
+{"id": "n007", "question": "微信怎么备份聊天记录？", "expected": "escalate"}
+{"id": "n008", "question": "给我讲个笑话", "expected": "escalate"}
+{"id": "n009", "question": "股票现在买哪只好？", "expected": "escalate"}
+{"id": "n010", "question": "你好", "expected": "chitchat"}
+{"id": "n011", "question": "谢谢你的帮助", "expected": "chitchat"}
+{"id": "n012", "question": "在吗？", "expected": "chitchat"}
