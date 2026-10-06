@@ -42,18 +42,18 @@ def load_docs() -> list[dict]:
     return [json.loads(l) for l in CORPUS.read_text(encoding="utf-8").splitlines() if l]
 
 
-def sample_docs(docs: list[dict], n: int = 80, seed: int = 42) -> list[dict]:
-    """分层采样：按 section 均匀分配，保证覆盖各分区。"""
+def sample_docs(docs: list[dict], n: int = 120, seed: int = 42) -> list[dict]:
+    """分层采样：按 section 大小比例抽取，大分区更多题，保证覆盖各分区。"""
     rng = random.Random(seed)
     by_section: dict[str, list[dict]] = {}
     for d in docs:
         by_section.setdefault(d["section"], []).append(d)
 
-    per_section = max(1, n // max(1, len(by_section)))
     sampled: list[dict] = []
     for sec, ds in sorted(by_section.items()):
+        k = max(1, round(n * len(ds) / len(docs)))
         rng.shuffle(ds)
-        sampled.extend(ds[: per_section])
+        sampled.extend(ds[:k])
     rng.shuffle(sampled)
     return sampled[:n]
 

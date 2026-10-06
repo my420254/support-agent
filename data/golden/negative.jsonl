@@ -10,3 +10,21 @@
 {"id": "n010", "question": "你好", "expected": "chitchat"}
 {"id": "n011", "question": "谢谢你的帮助", "expected": "chitchat"}
 {"id": "n012", "question": "在吗？", "expected": "chitchat"}
+{"id": "n013", "question": "帮我写一封辞职信", "expected": "escalate"}
+{"id": "n014", "question": "今天股市涨了吗？", "expected": "escalate"}
+{"id": "n015", "question": "怎么考驾照？", "expected": "escalate"}
+{"id": "n016", "question": "推荐一部电影给我", "expected": "escalate"}
+{"id": "n017", "question": "帮我算一下 1234 乘以 5678", "expected": "escalate"}
+{"id": "n018", "question": "你是真人还是机器人？", "expected": "chitchat"}
+{"id": "n019", "question": "能帮我点个外卖吗", "expected": "escalate"}
+{"id": "n020", "question": "怎么设置支付宝免密支付", "expected": "escalate"}
+{"id": "n021", "question": "给我讲个鬼故事", "expected": "escalate"}
+{"id": "n022", "question": "帮我翻译这句话：Hello world", "expected": "escalate"}
+{"id": "n023", "question": "周末去哪玩比较好", "expected": "escalate"}
+{"id": "n024", "question": "怎么减肥最快", "expected": "escalate"}
+{"id": "n025", "question": "在吗在吗在吗", "expected": "chitchat"}
+{"id": "n026", "question": "你叫什么名字？", "expected": "chitchat"}
+{"id": "n027", "question": "帮我查一下北京到上海的高铁票", "expected": "escalate"}
+{"id": "n028", "question": "怎么开通信用卡", "expected": "escalate"}
+{"id": "n029", "question": "给我算算今天的运势", "expected": "escalate"}
+{"id": "n030", "question": "帮我写作业", "expected": "escalate"}
