@@ -22,11 +22,8 @@
         ↑ 评估闭环（P4）：golden 集 → 检索指标 + RAGAS → 坏例回流
 ```
 
-当前实现进度对应架构：
-- ✅ 已实现：服务层、checkpointer、检索（dense 基线）、工具（`lookup_knowledge_base`）
-- ⏳ P3：Agent 编排（路由/评分/纠正式/转人工）
-- ⏳ P4：评估闭环
-- ⏳ P5：可观测 + 部署
+实现状态：**全部完成**（服务层 / 检索 / Agentic 编排 / 评估闭环 / 可观测配置 / Docker）。
+唯一未做的是"真实线上流量"相关的 A/B 与压测（无流量，只能写设计）。
 
 ## 3. 技术选型 + 理由（对比表）
 
@@ -88,10 +85,6 @@ dify-docs 仓库(zho .mdx)  →  cleaner.py 清洗(frontmatter/JSX/图片/链接
 - **调参结论与消融实验独立互证**：两条证据都指向"BM25 在此关键词密集语料上更强"，故权重向 BM25 倾斜。
 - **关键**：等权 RRF 下 hybrid(59.2%) 打不过 BM25 单路(60.0%)；调参后 hybrid(63.3%) 才**全面反超所有单路**。
 
-**诚实的重排结论**（同 30 题对比 hybrid：Hit@1 0.500/Hit@3 0.833/Hit@5 0.900）：rerank 提升 Hit@3/Hit@5/nDCG（+3~4pp），但 **Hit@1 没变**，且 **BM25 单路 Hit@1 仍最强（0.567）**。加上 560M 参数在 CPU 上的高成本，结论是**当前语料规模下 rerank 增益有限、性价比不高**——线上可选择不加 rerank 省成本，这是实测后得出的权衡，而非堆技术名词。
-
-**诚实的消融结论**：dense 最弱（54%）；BM25 在这个关键词密集的技术文档上已经很强（60%）；hybrid（RRF）≈ BM25（59%）。混合检索的主要价值是补 dense 的短板，但在关键词密集语料上并未显著超过纯 BM25——**下一个真正的提升杠杆是重排（cross-encoder 语义重打分）**。
-
 **小测评集的教训**：68 题版 hybrid Hit@1 一度 71%，扩充到 120 题后回落到 59%——小测评集会高估性能，测评集必须够大、够覆盖（这也是为什么加了坏例回流机制）。
 
 **性能踩坑（真实调试记录）**：
@@ -152,9 +145,10 @@ dify-docs 仓库(zho .mdx)  →  cleaner.py 清洗(frontmatter/JSX/图片/链接
 
 ## 10. 里程碑状态
 
-- [x] P0 脚手架 + 服务
-- [x] P1 语料管线
-- [x] P2 检索基线（dense + Qdrant）
-- [x] P3 Agentic 编排（Corrective RAG + 转人工 + 防循环）
-- [~] P4 评估 harness + 真实调优（检索指标✅ dense vs hybrid；RAGAS 生成指标待做）
-- [ ] P5 可观测 + 前端 + Postgres + Docker 上线
+- [x] P0 脚手架 + FastAPI/LangGraph 服务
+- [x] P1 语料管线（291 篇 Dify 中文文档）
+- [x] P2 检索（dense/BM25/hybrid/rerank 四路 + 消融 + 权重调参）
+- [x] P3 Agentic 编排（意图路由 + Corrective RAG + 多 Agent + HITL + 记忆 + 护栏）
+- [x] P4 评估 harness（golden 120 + 负样本 30 + 坏例回流 + 检索/生成指标）
+- [x] P5 工程化（Docker + Langfuse 配置 + crash-resume/session-isolation 验收）
+- [ ] 未做（需真实流量）：线上 A/B、压测、真实用户反馈闭环
