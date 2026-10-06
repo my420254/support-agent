@@ -1,10 +1,11 @@
-"""混合检索：dense(Qdrant) + sparse(BM25) → RRF 融合。
+"""混合检索：dense(Qdrant) + sparse(BM25) → weighted RRF 融合。
 
-RRF（Reciprocal Rank Fusion）：两路检索各自按相关性排名，融合分 = Σ 1/(k+rank)，
-再按融合分重排（k 通常取 60）。相比单路 dense，关键词类问题（部署/报错/专有名词）召回更准。
+RRF（Reciprocal Rank Fusion）：两路各自按名次贡献 1/(k+rank)，加权后融合再重排。
+用「名次」而非「分值」，回避了 BM25 分值(0~几十)与 cosine(0~1) 量纲不同、无法直接加权的问题。
 
-为什么需要 BM25：dense 向量擅长语义相近，但对精确关键词（命令、版本号、专有名词）
-不敏感；BM25 恰好补这一块，二者 RRF 融合通常能同时提升 Recall 和 MRR。
+权重来源（eval/tune_weights.py，80 验证/40 测试切分）：
+  调参得 dense 权重 alpha=0.1、BM25 权重 0.9 —— 与消融实验(BM25>dense)相互印证，
+  测试集 Hit@1 0.750→0.775、nDCG@5 0.889→0.911。k 在 60~100 区间不敏感。
 """
 
 import jieba
@@ -13,9 +14,10 @@ from rank_bm25 import BM25Okapi
 from retrieval.embedder import Embedder
 from retrieval.qdrant_store import QdrantStore
 
-RRF_K = 60  # RRF 常数，业界常用 60
+RRF_K = 60  # RRF 平滑常数（原论文/ES/Qdrant 默认；60~100 不敏感）
 DENSE_LIMIT = 20  # dense 路取的候选数
 SPARSE_LIMIT = 20  # BM25 路取的候选数
+DENSE_WEIGHT = 0.1  # dense 权重 alpha；BM25 权重 = 1 - alpha = 0.9（调参得出）
 
 
 class HybridRetriever:
@@ -80,7 +82,7 @@ class HybridRetriever:
         candidates = self.search(query, top_k=candidate_k)
         return self._get_reranker().rerank(query, candidates, top_k)
 
-    def search(self, query: str, top_k: int = 4) -> list[dict]:
+    def search(self, query: str, top_k: int = 4, alpha: float = DENSE_WEIGHT) -> list[dict]:
         # 1) dense 路：向量检索
         vec = self.embedder.embed_query(query)
         dense = self.store.search(vec, limit=DENSE_LIMIT)
@@ -91,17 +93,17 @@ class HybridRetriever:
             range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True
         )[:SPARSE_LIMIT]
 
-        # 3) RRF 融合（用 Qdrant point id 作为 chunk 唯一键）
+        # 3) weighted RRF 融合（alpha=dense 权重，1-alpha=BM25 权重）
         fused: dict = {}
         point_by_id: dict = {}
         for rank, pt in enumerate(dense):
             pid = pt.id
-            fused[pid] = fused.get(pid, 0.0) + 1.0 / (RRF_K + rank + 1)
+            fused[pid] = fused.get(pid, 0.0) + alpha / (RRF_K + rank + 1)
             point_by_id[pid] = pt
         for rank, idx in enumerate(sparse_idx):
             pt = self.chunks[idx]
             pid = pt.id
-            fused[pid] = fused.get(pid, 0.0) + 1.0 / (RRF_K + rank + 1)
+            fused[pid] = fused.get(pid, 0.0) + (1 - alpha) / (RRF_K + rank + 1)
             point_by_id[pid] = pt
 
         ordered = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
