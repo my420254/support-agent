@@ -118,7 +118,23 @@ dify-docs 仓库(zho .mdx)  →  cleaner.py 清洗(frontmatter/JSX/图片/链接
 
 **踩坑记录（真实调试）**：① DeepSeek 推理模型不支持 response_format/tool_choice；② Qdrant localhost IPv6 慢路径（21s→0.03s）；③ HF Hub 离线；④ 幻觉率评测把"转人工"误判成"幻觉"（已修：转人工单列）；⑤ LLM API 瞬断需退避重试。
 
-## 9. 里程碑状态
+## 9. 已知局限与上线分级（诚实）
+
+**上线分级**：
+- 简历/GitHub 作品集：✅ 可收官（真实指标 + 完整闭环 + 可靠性与护栏）
+- 内部 demo / 小规模 beta：✅ 可（需加监控 + 人工兜底）
+- 真实客户大规模生产：❌ 暂不建议（以下局限未达标）
+
+**主要局限**：
+1. **answer 评估样本少**（15 题）——生成指标需扩到 100+ 才有统计意义；
+2. **KB 端到端延迟 ~26s**（DeepSeek 推理模型本身慢 + route/generate 多次调用）——需换更快的非推理模型、流式、缓存常见问题；
+3. **负样本转人工准确率 83%**（30 题中约 5 个未正确拒答）——安全敏感场景不够；
+4. **rerank 在 CPU 上 560M 参数极慢**——生产需 GPU 或 ONNX INT8 量化；
+5. golden 集是 grounded generation（无人工标准答案），无法做 answer correctness，只能做 faithfulness/abstention/引用正确率。
+
+**迭代机制**：120 题检索回归 + 生成评测设为固定 release gate，每次改 retriever/prompt 自动跑一次，防止静默回退。
+
+## 10. 里程碑状态
 
 - [x] P0 脚手架 + 服务
 - [x] P1 语料管线
