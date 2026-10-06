@@ -23,7 +23,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, MessagesState, StateGraph
 
-from agents.tools import format_documents, search_knowledge_base
+from agents.tools import format_documents, search_knowledge_base_hybrid
 from core import get_model, settings
 
 MAX_REWRITES = 2  # 纠正式改写上限（业界常见 2-3 次，防死循环）
@@ -57,7 +57,8 @@ ESCALATE_TEXT = "抱歉，我在知识库中没能找到足以可靠回答这个
 class AgentState(MessagesState, total=False):
     """图状态：messages 来自 MessagesState（自动合并），其余为业务字段。"""
 
-    question: str
+    question: str  # 当前检索 query（可能被 rewrite 改写）
+    original_question: str  # 用户原始问题（生成回答用它，不被改写污染）
     documents: list[dict]
     relevant: bool
     rewrite_count: int
@@ -76,23 +77,24 @@ def _last_human(messages: list) -> str:
 
 def prepare(state: AgentState, config: RunnableConfig) -> dict:
     """入口：取最新用户消息作为初始问题，重置改写计数。"""
-    return {"question": _last_human(state["messages"]), "rewrite_count": 0}
+    q = _last_human(state["messages"])
+    return {"question": q, "original_question": q, "rewrite_count": 0}
 
 
 async def retrieve(state: AgentState, config: RunnableConfig) -> dict:
     """检索节点：对当前问题做 Qdrant 检索。"""
-    return {"documents": search_knowledge_base(state["question"], top_k=4)}
+    return {"documents": search_knowledge_base_hybrid(state["question"], top_k=4)}
 
 
 async def grade(state: AgentState, config: RunnableConfig) -> dict:
     """评分节点：LLM 判断检索结果是否足以回答（YES/NO 纯文本 + 解析）。"""
     model = _get_model(config)
     prompt = GRADE_PROMPT.format(
-        question=state["question"],
+        question=state["original_question"],
         documents=format_documents(state["documents"]),
     )
     response = await model.ainvoke([SystemMessage(prompt)])
-    relevant = "yes" in str(response.content).strip().lower()
+    relevant = str(response.content).strip().lower().startswith("yes")
     return {"relevant": relevant}
 
 
@@ -100,7 +102,7 @@ async def generate(state: AgentState, config: RunnableConfig) -> dict:
     """生成节点：基于检索文档回答，标注来源。"""
     model = _get_model(config)
     prompt = GENERATE_PROMPT.format(
-        question=state["question"],
+        question=state["original_question"],
         documents=format_documents(state["documents"]),
     )
     response = await model.ainvoke([SystemMessage(prompt)])

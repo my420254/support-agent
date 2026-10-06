@@ -37,6 +37,24 @@ def search_knowledge_base(query: str, top_k: int = 4) -> list[dict]:
     ]
 
 
+_hybrid = None
+
+
+def _get_hybrid():
+    """懒加载 HybridRetriever（首次扫全量 chunk 建 BM25，几秒）。"""
+    global _hybrid
+    if _hybrid is None:
+        from retrieval.hybrid import HybridRetriever
+
+        _hybrid = HybridRetriever()
+    return _hybrid
+
+
+def search_knowledge_base_hybrid(query: str, top_k: int = 4) -> list[dict]:
+    """混合检索（dense + BM25 + RRF）。线上 agent 用它（eval 证明优于纯 dense）。"""
+    return _get_hybrid().search(query, top_k=top_k)
+
+
 def format_documents(docs: list[dict]) -> str:
     """把检索结果格式化为给模型看的上下文（带标题/来源/内容）。"""
     if not docs:
