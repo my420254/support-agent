@@ -12,23 +12,31 @@ def chunk_markdown(content: str, chunk_size: int = 400, overlap: int = 60) -> li
     sections: list[tuple[str, str]] = []
     cur_heading = ""
     cur_lines: list[str] = []
-    in_code_block = False  # 跟踪代码块，避免把代码里的 ## 注释误当标题切断
+    in_code_block = False
+
     for line in content.split("\n"):
-        if line.strip().startswith("```"):
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
             in_code_block = not in_code_block
             cur_lines.append(line)
             continue
-        if not in_code_block and (line.startswith("##") or line.startswith("###")):
+
+        # 仅在代码块外部识别合法的 Markdown 标题（# ~ ####，必须带空格）
+        if not in_code_block and (
+            line.startswith("## ") or line.startswith("### ") or line.startswith("#### ") or line.startswith("# ")
+        ):
             if cur_lines:
                 sections.append((cur_heading, "\n".join(cur_lines)))
             cur_heading = line.lstrip("#").strip()
             cur_lines = []
         else:
             cur_lines.append(line)
+
     if cur_lines:
         sections.append((cur_heading, "\n".join(cur_lines)))
 
     chunks: list[dict] = []
+    step = max(1, chunk_size - overlap)
     for heading, body in sections:
         body = body.strip()
         if not body:
@@ -41,5 +49,8 @@ def chunk_markdown(content: str, chunk_size: int = 400, overlap: int = 60) -> li
                 piece = body[start : start + chunk_size].strip()
                 if piece:
                     chunks.append({"heading": heading, "text": piece})
-                start += chunk_size - overlap
+                if start + chunk_size >= len(body):
+                    break
+                start += step
     return chunks
+
