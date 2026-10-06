@@ -85,6 +85,8 @@ dify-docs 仓库(zho .mdx)  →  cleaner.py 清洗(frontmatter/JSX/图片/链接
 - **转人工**：LangGraph `interrupt()`，服务层已支持中断恢复（复用底座）。
 - **输出护栏**：必须引用来源、查不到就明说并转人工，不编造（`support_agent.py` 的 INSTRUCTIONS 已体现，P3 落地成节点）。
 
+**P3 踩坑记录（真实调试）**：DeepSeek v4.1-flash 是推理模型，不支持 `response_format`（JSON 模式）和强制 `tool_choice`，所以 `grade` 节点用「YES/NO 纯文本 + 解析」，不用 `with_structured_output`。
+
 ## 8. 评估设计（P4）
 
 - **golden 集**：文档 FAQ 抽取 + 基于真实文档的 grounded 生成（来源标注）。
@@ -99,6 +101,6 @@ dify-docs 仓库(zho .mdx)  →  cleaner.py 清洗(frontmatter/JSX/图片/链接
 - [x] P0 脚手架 + 服务
 - [x] P1 语料管线
 - [x] P2 检索基线（dense + Qdrant）
-- [ ] P3 Agentic 编排
+- [x] P3 Agentic 编排（Corrective RAG + 转人工 + 防循环）
 - [ ] P4 评估 harness + 真实调优
 - [ ] P5 可观测 + 前端 + Postgres + Docker 上线
