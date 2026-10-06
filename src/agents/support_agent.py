@@ -43,38 +43,17 @@ ROUTE_PROMPT = """你是客服意图分类器。判断用户这句话属于哪�
 
 ORDER_ID_RE = re.compile(r"ORD\d+", re.IGNORECASE)
 
-GRADE_PROMPT = """你是检索质量评审。判断下面的检索文档是否足以回答用户问题。
-
-用户问题：{question}
-
-检索到的文档：
-{documents}
-
-只输出一个词：YES（文档足以给出有依据的回答）或 NO（不足以回答）。不要输出任何其他内容。"""
-
 GENERATE_PROMPT = """你是「Dify」产品的技术支持客服。基于下面检索到的文档回答用户问题。
 
 规则：
 1. 只用文档里的信息回答，不要编造。
 2. 引用来源时标注文档给出的 URL。
-3. 文档不足以回答时，明确说明并建议转人工。
+3. 如果文档不足以回答，只输出「无法回答」四个字，不要猜测或补充。
 
 用户问题：{question}
 
 检索到的文档：
 {documents}"""
-
-VERIFY_PROMPT = """你是答案审核员。判断下面的回答中的关键事实是否都能在文档上下文中找到依据（没有编造）。
-
-注意：礼貌用语、格式、引导语不算编造；只关心事实性陈述是否有据可查。
-
-文档上下文：
-{documents}
-
-待审回答：
-{answer}
-
-只输出一个词：YES（关键事实都有据可查）或 NO（回答包含编造/无依据的事实）。"""
 
 REWRITE_PROMPT = """原查询在知识库中检索效果不佳。请把它改写成一个更利于检索的查询（更具体、关键词更明确、去掉口语和无关词）。只输出改写后的查询，不要解释。"""
 
@@ -97,12 +76,10 @@ class AgentState(MessagesState, total=False):
 
     question: str  # 当前检索 query（可能被 rewrite 改写）
     original_question: str  # 用户原始问题（route/generate 用它，不被改写污染）
-    intent: str  # kb / chitchat / escalate
+    intent: str  # kb / order / complaint / chitchat / escalate
     documents: list[dict]
-    relevant: bool
     rewrite_count: int
-    draft_answer: str  # generate 的草稿，verify 通过后才入 messages
-    verified: bool  # 自验证结果
+    draft_answer: str  # generate 草稿，非「无法回答」时 commit 入 messages
 
 
 def _get_model(config: RunnableConfig) -> BaseChatModel:
@@ -157,9 +134,10 @@ async def route(state: AgentState, config: RunnableConfig) -> dict:
         [SystemMessage(ROUTE_PROMPT), HumanMessage(state["original_question"])]
     )
     raw = str(response.content).strip().lower()
-    # 精确匹配（取第一个 token），避免子串误判（如"节点排序(order)规则"被误判成订单）
-    first = raw.split()[0].strip("。.，,；;：")
-    intent = first if first in ("kb", "order", "complaint", "chitchat", "escalate") else "kb"
+    # 剥离可能的思考标签（如 deepseek reasoner），提取标准意图词
+    cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    matches = re.findall(r"\b(kb|order|complaint|chitchat|escalate)\b", cleaned)
+    intent = matches[0] if matches else "kb"
     return {"intent": intent}
 
 
@@ -181,20 +159,8 @@ async def retrieve(state: AgentState, config: RunnableConfig) -> dict:
     return {"documents": search_knowledge_base_hybrid(state["question"], top_k=4)}
 
 
-async def grade(state: AgentState, config: RunnableConfig) -> dict:
-    """评分节点：LLM 判断检索结果是否足以回答（YES/NO 纯文本 + 解析）。"""
-    model = _get_model(config)
-    prompt = GRADE_PROMPT.format(
-        question=state["original_question"],
-        documents=format_documents(state["documents"]),
-    )
-    response = await model.with_config(tags=["skip_stream"]).ainvoke([SystemMessage(prompt)])
-    relevant = str(response.content).strip().lower().startswith("yes")
-    return {"relevant": relevant}
-
-
 async def generate(state: AgentState, config: RunnableConfig) -> dict:
-    """生成节点：基于检索文档回答原始问题，先写成草稿（draft_answer），待 verify 通过。"""
+    """生成节点：prompt 强制"只用文档、不足则输出「无法回答」"，一步同时完成评分+接地。"""
     model = _get_model(config)
     prompt = GENERATE_PROMPT.format(
         question=state["original_question"],
@@ -204,19 +170,8 @@ async def generate(state: AgentState, config: RunnableConfig) -> dict:
     return {"draft_answer": str(response.content)}
 
 
-async def verify(state: AgentState, config: RunnableConfig) -> dict:
-    """自验证（Self-Reflection）：检查草稿是否被检索文档支撑，防幻觉。"""
-    model = _get_model(config)
-    prompt = VERIFY_PROMPT.format(
-        documents=format_documents(state["documents"]),
-        answer=state["draft_answer"],
-    )
-    response = await model.with_config(tags=["skip_stream"]).ainvoke([SystemMessage(prompt)])
-    return {"verified": str(response.content).strip().lower().startswith("yes")}
-
-
 def commit(state: AgentState, config: RunnableConfig) -> dict:
-    """验证通过：把草稿写入 messages 交付给用户。"""
+    """把草稿写入 messages 交付给用户。"""
     return {"messages": [AIMessage(content=state["draft_answer"])]}
 
 
@@ -266,38 +221,31 @@ def complaint_handle(state: AgentState, config: RunnableConfig) -> dict:
     }
 
 
-def route_after_grade(state: AgentState) -> Literal["generate", "rewrite", "escalate"]:
-    if state["relevant"]:
-        return "generate"
+def route_after_generate(state: AgentState) -> Literal["commit", "rewrite", "escalate"]:
+    """生成后路由：正常 → commit；「无法回答」→ 纠正式改写或转人工（防死循环）。"""
+    if "无法回答" not in state["draft_answer"]:
+        return "commit"
     if state["rewrite_count"] < MAX_REWRITES:
         return "rewrite"
     return "escalate"
 
 
-def route_after_verify(state: AgentState) -> Literal["commit", "escalate"]:
-    return "commit" if state["verified"] else "escalate"
-
-
 def _build_knowledge_specialist():
-    """知识专家子图：SAQ → Corrective RAG → 自验证。独立编译，可单独替换/测试。"""
+    """知识专家子图：SAQ → 检索 → 生成（prompt 级接地；「无法回答」→ 纠错/转人工）。"""
     g = StateGraph(AgentState)
     g.add_node("resolve_query", resolve_query)
     g.add_node("retrieve", retrieve)
-    g.add_node("grade", grade)
     g.add_node("generate", generate)
-    g.add_node("verify", verify)
     g.add_node("commit", commit)
     g.add_node("rewrite", rewrite)
     g.add_node("escalate", escalate)
     g.set_entry_point("resolve_query")
     g.add_edge("resolve_query", "retrieve")
-    g.add_edge("retrieve", "grade")
+    g.add_edge("retrieve", "generate")
     g.add_conditional_edges(
-        "grade", route_after_grade, {"generate": "generate", "rewrite": "rewrite", "escalate": "escalate"}
+        "generate", route_after_generate, {"commit": "commit", "rewrite": "rewrite", "escalate": "escalate"}
     )
     g.add_edge("rewrite", "retrieve")
-    g.add_edge("generate", "verify")
-    g.add_conditional_edges("verify", route_after_verify, {"commit": "commit", "escalate": "escalate"})
     g.add_edge("commit", END)
     g.add_edge("escalate", END)
     return g.compile()
