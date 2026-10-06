@@ -25,6 +25,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, MessagesState, StateGraph
+from langgraph.types import interrupt
 
 from agents.tools import create_ticket, format_documents, query_order, search_knowledge_base_hybrid
 from core import get_model, settings
@@ -188,8 +189,14 @@ async def rewrite(state: AgentState, config: RunnableConfig) -> dict:
 
 
 def escalate(state: AgentState, config: RunnableConfig) -> dict:
-    """转人工节点：诚实拒答。"""
-    return {"messages": [AIMessage(content=ESCALATE_TEXT)]}
+    """真实转人工（HITL）：interrupt() 挂起图，人工客服通过 /resume 恢复。
+
+    服务层检测到中断后返回提示给用户；人工坐席用同 thread_id 调 /invoke 时，
+    服务端用 Command(resume=...) 唤醒这里，human_reply 拿到人工回复。
+    """
+    ticket_id = create_ticket("人工支持", state["original_question"][:80])
+    human_reply = interrupt(f"该问题已转接人工客服（工单 {ticket_id}），请稍候。")
+    return {"messages": [AIMessage(content=f"[人工客服回复] {human_reply}")]}
 
 
 def chitchat(state: AgentState, config: RunnableConfig) -> dict:
@@ -210,15 +217,10 @@ def order_lookup(state: AgentState, config: RunnableConfig) -> dict:
 
 
 def complaint_handle(state: AgentState, config: RunnableConfig) -> dict:
-    """投诉处理节点：创建工单（工具调用）+ 转人工。"""
+    """投诉处理：创建工单（工具）+ interrupt 转人工（HITL）。"""
     ticket_id = create_ticket("投诉", state["original_question"][:80])
-    return {
-        "messages": [
-            AIMessage(
-                content=f"非常抱歉给您带来不便。已为您创建工单 {ticket_id} 并转接人工客服优先处理，请稍候。"
-            )
-        ]
-    }
+    human_reply = interrupt(f"非常抱歉给您带来不便。已创建工单 {ticket_id} 并转接人工客服，请稍候。")
+    return {"messages": [AIMessage(content=f"[人工客服回复] {human_reply}")]}
 
 
 def route_after_generate(state: AgentState) -> Literal["commit", "rewrite", "escalate"]:
