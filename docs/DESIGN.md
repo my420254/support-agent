@@ -93,14 +93,26 @@ dify-docs 仓库(zho .mdx)  →  cleaner.py 清洗(frontmatter/JSX/图片/链接
 
 **P3 踩坑记录（真实调试）**：DeepSeek v4.1-flash 是推理模型，不支持 `response_format`（JSON 模式）和强制 `tool_choice`，所以 `grade` 节点用「YES/NO 纯文本 + 解析」，不用 `with_structured_output`。
 
-## 8. 评估设计（P4）
+## 8. 评估体系（真实指标）
 
-- **golden 集**：文档 FAQ 抽取 + 基于真实文档的 grounded 生成（来源标注）。
-- **检索指标**：Recall@k / MRR / nDCG（分检索与生成两段评，否则分不清改检索还是改 prompt）。
-- **生成指标**：RAGAS（faithfulness / answer relevancy / context precision & recall）。
-- **客服特有**：幻觉率、转人工准确率、引用准确率。
-- **性能**：首字延迟 / 总延迟 / token / 成本。
-- **CI 门禁**：指标低于阈值 fail；坏例回流 golden 集。
+**golden 集**：68 题（grounded generation，来源可追溯）+ 12 题负样本（out-of-scope，测转人工）。
+
+**检索指标**（文档级，68 题）：
+| 检索方式 | Hit@1 | Hit@3 | Hit@5 | MRR |
+|---|---|---|---|---|
+| dense（bge-small） | 0.544 | 0.912 | 0.927 | 0.727 |
+| BM25-only | 0.632 | 0.882 | 0.912 | 0.766 |
+| hybrid（RRF） | **0.706** | **0.941** | **0.956** | **0.822** |
+
+**生成指标**（自验证版，15 题可回答 + 12 题负样本）：
+| 指标 | 数值 |
+|---|---|
+| 转人工/闲聊准确率（负样本） | 83.3%（意图分类有模型波动） |
+| 转人工率（可回答问题） | 20%（自验证把不确定问题诚实拒答） |
+| 引用准确率 | 100% |
+| 幻觉率（实际交付回答中） | 16.7% |
+
+**踩坑记录（真实调试）**：① DeepSeek 推理模型不支持 response_format/tool_choice；② Qdrant localhost IPv6 慢路径（21s→0.03s）；③ HF Hub 离线；④ 幻觉率评测把"转人工"误判成"幻觉"（已修：转人工单列）；⑤ LLM API 瞬断需退避重试。
 
 ## 9. 里程碑状态
 
