@@ -47,7 +47,7 @@ def build_temp_index(corpus: list[dict], embedder: Embedder, strategy: str, size
             embed_text = (c["heading"] + "\n" + c["text"]) if c["heading"] else c["text"]
             chunks.append({**doc, "heading": c["heading"], "text": c["text"], "embed_text": embed_text})
 
-    collection = f"ablate_{strategy}_{size}_{overlap}_{uuid.uuid4().hex[:6]}"
+    collection = f"ablate_{strategy}_{size}_{overlap}"
     store = QdrantStore(collection=collection)
     store.recreate(embedder.dim)
     vecs = embedder.embed_documents([c["embed_text"] for c in chunks])
@@ -93,7 +93,7 @@ def main() -> None:
         print(f"{strategy:8s} size={size:4d} overlap={overlap:3d} | {nchunks:5d} chunks | "
               f"Hit@1={m['Hit@1']:.4f} Hit@3={m['Hit@3']:.4f} Hit@5={m['Hit@5']:.4f} "
               f"MRR={m['MRR']:.4f} nDCG@5={m['nDCG@5']:.4f} | {time.time()-t0:.0f}s")
-        store.client.delete_collection(collection)  # 清理临时集合
+        # 临时集合保留（固定名，下次 recreate 覆盖）；如需清理可手动删 ablate_* 集合
 
     best = max(rows, key=lambda r: r[4]["MRR"])
     print(f"\n最优（按 MRR）: {best[0]} size={best[1]} overlap={best[2]} → MRR={best[4]['MRR']:.4f}")
