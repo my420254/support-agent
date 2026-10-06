@@ -27,6 +27,7 @@ def search_knowledge_base(query: str, top_k: int = 4) -> list[dict]:
     results = store.search(embedder.embed_query(query), limit=top_k)
     return [
         {
+            "doc_id": r.payload["doc_id"],
             "title": r.payload["title"],
             "url": r.payload["url"],
             "text": r.payload["text"],

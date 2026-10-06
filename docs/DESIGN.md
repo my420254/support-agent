@@ -63,16 +63,22 @@ dify-docs 仓库(zho .mdx)  →  cleaner.py 清洗(frontmatter/JSX/图片/链接
 | embedding 维度 | 512（bge-small-zh） | 模型固定 |
 | 查询前缀 | bge 检索前缀 | bge 系列查询端加前缀提升召回（`embedder.py` 已写） |
 
-## 6. 检索优化路线（真实调参记录会填在这里）
+## 6. 检索调优记录（golden 集 68 题，真实指标）
 
-这是本项目的"真实调试"证据链，每一步都配指标（P4 用 golden 集量化）：
+| 版本 | 检索方式 | Hit@1 | Hit@3 | Hit@5 | Hit@10 | MRR |
+|---|---|---|---|---|---|---|
+| v0 基线 | dense（bge-small-zh） | 0.5441 | 0.9118 | 0.9265 | 0.9706 | 0.7267 |
+| v1 | + BM25 混合（jieba + RRF） | 0.7059 | 0.9412 | 0.9559 | 0.9853 | 0.8215 |
+| v2（计划） | + bge-reranker 重排 | — | — | — | — | — |
+| v3（计划） | bge-m3 + 近重复去重 | — | — | — | — | — |
 
-| 版本 | 检索方式 | 现状 | 观察到的真实问题 |
-|---|---|---|---|
-| v0 基线 | dense（bge-small-zh） | ✅ 已跑 | "如何部署 Dify"命中教程页而非部署文档；cloud/self-host 近重复文档互相挤排名 |
-| v1（计划） | + BM25 sparse 混合（RRF） | ⏳ | 预期：关键词类问题（部署/报错）精度提升 |
-| v2（计划） | + bge-reranker 重排 | ⏳ | 预期：top-k 精度再提升 |
-| v3（计划） | bge-m3 + 近重复去重 | ⏳ | 预期：中英文+sparse 一体、去掉 cloud/self-host 重复 |
+**v0→v1 结论**：加 BM25 后 Hit@1 +16.2pp（54%→71%）、MRR +0.095（0.73→0.82）。
+关键词类问题（部署命令/版本号/专有名词）正是 dense 向量不擅长的精确匹配，BM25 补齐了短板。
+
+**性能踩坑（真实调试记录）**：
+1. Qdrant 用 `localhost` 在 Windows 走 IPv6 慢路径，检索 P99 高达 21s → 改 `127.0.0.1` → ~0.03s；
+2. sentence-transformers 每次加载去 HF Hub 检查 commit，国内 SSL 卡住重试拖慢启动 → 设 `HF_HUB_OFFLINE=1` 离线加载。
+（修完后 68 题整轮评测从 ~6 分钟降到 ~7 秒。）
 
 ## 7. Agent 设计（P3）
 
@@ -102,5 +108,5 @@ dify-docs 仓库(zho .mdx)  →  cleaner.py 清洗(frontmatter/JSX/图片/链接
 - [x] P1 语料管线
 - [x] P2 检索基线（dense + Qdrant）
 - [x] P3 Agentic 编排（Corrective RAG + 转人工 + 防循环）
-- [ ] P4 评估 harness + 真实调优
+- [~] P4 评估 harness + 真实调优（检索指标✅ dense vs hybrid；RAGAS 生成指标待做）
 - [ ] P5 可观测 + 前端 + Postgres + Docker 上线

@@ -4,6 +4,12 @@ baseline 先用本机缓存的 bge-small-zh；后续可升级 bge-m3（dense+spa
 bge 系列查询端建议加前缀（见 _QUERY_PREFIX），默认关闭，作为后续优化项。
 """
 
+import os
+
+# 离线加载：模型已本地缓存。不设置时，每次加载都会去 HF Hub 检查最新 commit，
+# 在国内网络下 SSL 会卡住并重试，拖慢启动数十秒。
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 from sentence_transformers import SentenceTransformer
 
 _MODEL_NAME = "BAAI/bge-small-zh-v1.5"
