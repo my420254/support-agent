@@ -1,19 +1,21 @@
-"""企业知识库智能客服 Agent（P3：Agentic RAG / Corrective RAG）。
+"""企业知识库智能客服 Agent（Agentic RAG + 意图路由）。
 
 图结构：
-    prepare → retrieve → grade ─(相关)→ generate → END
-                           └(不相关 & 改写<MAX)→ rewrite → retrieve
-                           └(不相关 & 改写≥MAX)→ escalate → END
+    prepare → route ─(kb)→ retrieve → grade ─(相关)→ generate → END
+                   │                      └(不相关 & 改写<2)→ rewrite → retrieve
+                   │                      └(不相关 & 改写≥2)→ escalate → END
+                   ├(chitchat)→ chitchat → END
+                   └(escalate)→ escalate → END
 
-为什么从 P2 的「模型↔工具」循环升级成显式图：
-1. 检索/评分/生成拆成独立节点 → 分步评估（检索指标 vs 生成指标分开看）、分步观测；
-2. Corrective（纠正式）：检索结果不相关就改写 query 重检索，最多 MAX_REWRITES 次，防死循环；
-3. 仍不相关 → 转人工（诚实拒答）而不是编造 —— 这是客服 agent 的核心价值。
+设计思想：
+1. route 做「输入理解」——意图分类（kb 知识库问题 / chitchat 闲聊 / escalate 越界投诉），
+   把「路由」和「生成」分开（业界原则：orchestration 决策独立于措辞）。
+   闲聊/越界直接短路，不再浪费检索。
+2. Corrective RAG：检索不相关就改写 query 重检索（限 MAX_REWRITES 次），仍不相关转人工。
+3. 检索用 hybrid（dense + BM25 + RRF）；回答用 original_question（不被改写污染）。
 
-踩坑记录（DeepSeek v4.1-flash 是推理模型）：
-- 不支持 response_format（JSON 模式）→ with_structured_output 默认会报 400；
-- 不支持强制 tool_choice → with_structured_output(method="function_calling") 会报 400；
-- 因此 grade 用「YES/NO 纯文本 + 解析」，不依赖 structured output。
+踩坑记录（DeepSeek v4.1-flash 是推理模型）：不支持 response_format 与强制 tool_choice，
+所以意图/评分都用「纯文本 + 解析」，不用 structured output。
 """
 
 from typing import Literal
@@ -27,6 +29,14 @@ from agents.tools import format_documents, search_knowledge_base_hybrid
 from core import get_model, settings
 
 MAX_REWRITES = 2  # 纠正式改写上限（业界常见 2-3 次，防死循环）
+
+ROUTE_PROMPT = """你是客服意图分类器。判断用户这句话属于哪类：
+
+- kb：与 Dify 产品功能/使用/部署/配置/插件相关，需要查知识库回答
+- chitchat：寒暄、闲聊、问候、感谢（如"你好""谢谢""在吗"）
+- escalate：投诉、辱骂，或超出客服范围（咨询其他产品、要求转人工等）
+
+只输出一个词：kb / chitchat / escalate。"""
 
 GRADE_PROMPT = """你是检索质量评审。判断下面的检索文档是否足以回答用户问题。
 
@@ -53,12 +63,15 @@ REWRITE_PROMPT = """原查询在知识库中检索效果不佳。请把它改写
 
 ESCALATE_TEXT = "抱歉，我在知识库中没能找到足以可靠回答这个问题的内容，已为您转接人工客服，请稍候。"
 
+CHITCHAT_TEXT = "你好！我是 Dify 产品的智能客服，可以帮你解答 Dify 的使用、部署、配置、插件开发等问题。请问有什么可以帮你？"
+
 
 class AgentState(MessagesState, total=False):
     """图状态：messages 来自 MessagesState（自动合并），其余为业务字段。"""
 
     question: str  # 当前检索 query（可能被 rewrite 改写）
-    original_question: str  # 用户原始问题（生成回答用它，不被改写污染）
+    original_question: str  # 用户原始问题（route/generate 用它，不被改写污染）
+    intent: str  # kb / chitchat / escalate
     documents: list[dict]
     relevant: bool
     rewrite_count: int
@@ -81,8 +94,36 @@ def prepare(state: AgentState, config: RunnableConfig) -> dict:
     return {"question": q, "original_question": q, "rewrite_count": 0}
 
 
+async def route(state: AgentState, config: RunnableConfig) -> dict:
+    """意图路由：kb（查知识库）/ chitchat（闲聊）/ escalate（越界，转人工）。
+
+    解析失败默认走 kb，交给后面的 Corrective RAG 兜底（不相关会转人工）。
+    """
+    model = _get_model(config)
+    response = await model.ainvoke(
+        [SystemMessage(ROUTE_PROMPT), HumanMessage(state["original_question"])]
+    )
+    raw = str(response.content).strip().lower()
+    if "chitchat" in raw:
+        intent = "chitchat"
+    elif "escalate" in raw:
+        intent = "escalate"
+    else:
+        intent = "kb"
+    return {"intent": intent}
+
+
+def route_intent(state: AgentState) -> Literal["retrieve", "chitchat", "escalate"]:
+    intent = state["intent"]
+    if intent == "chitchat":
+        return "chitchat"
+    if intent == "escalate":
+        return "escalate"
+    return "retrieve"
+
+
 async def retrieve(state: AgentState, config: RunnableConfig) -> dict:
-    """检索节点：对当前问题做 Qdrant 检索。"""
+    """检索节点：对当前问题做 hybrid 检索（dense + BM25 + RRF）。"""
     return {"documents": search_knowledge_base_hybrid(state["question"], top_k=4)}
 
 
@@ -99,7 +140,7 @@ async def grade(state: AgentState, config: RunnableConfig) -> dict:
 
 
 async def generate(state: AgentState, config: RunnableConfig) -> dict:
-    """生成节点：基于检索文档回答，标注来源。"""
+    """生成节点：基于检索文档回答原始问题，标注来源。"""
     model = _get_model(config)
     prompt = GENERATE_PROMPT.format(
         question=state["original_question"],
@@ -110,7 +151,7 @@ async def generate(state: AgentState, config: RunnableConfig) -> dict:
 
 
 async def rewrite(state: AgentState, config: RunnableConfig) -> dict:
-    """纠正式改写节点：改写问题后重检索。"""
+    """纠正式改写节点：改写检索 query（不影响 original_question）后重检索。"""
     model = _get_model(config)
     response = await model.ainvoke(
         [SystemMessage(REWRITE_PROMPT), HumanMessage(state["question"])]
@@ -126,6 +167,11 @@ def escalate(state: AgentState, config: RunnableConfig) -> dict:
     return {"messages": [AIMessage(content=ESCALATE_TEXT)]}
 
 
+def chitchat(state: AgentState, config: RunnableConfig) -> dict:
+    """闲聊节点：固定兜底回复，不走检索。"""
+    return {"messages": [AIMessage(content=CHITCHAT_TEXT)]}
+
+
 def route_after_grade(state: AgentState) -> Literal["generate", "rewrite", "escalate"]:
     if state["relevant"]:
         return "generate"
@@ -136,13 +182,20 @@ def route_after_grade(state: AgentState) -> Literal["generate", "rewrite", "esca
 
 graph = StateGraph(AgentState)
 graph.add_node("prepare", prepare)
+graph.add_node("route", route)
 graph.add_node("retrieve", retrieve)
 graph.add_node("grade", grade)
 graph.add_node("generate", generate)
 graph.add_node("rewrite", rewrite)
 graph.add_node("escalate", escalate)
+graph.add_node("chitchat", chitchat)
 graph.set_entry_point("prepare")
-graph.add_edge("prepare", "retrieve")
+graph.add_edge("prepare", "route")
+graph.add_conditional_edges(
+    "route",
+    route_intent,
+    {"retrieve": "retrieve", "chitchat": "chitchat", "escalate": "escalate"},
+)
 graph.add_edge("retrieve", "grade")
 graph.add_conditional_edges(
     "grade",
@@ -152,5 +205,6 @@ graph.add_conditional_edges(
 graph.add_edge("rewrite", "retrieve")
 graph.add_edge("generate", END)
 graph.add_edge("escalate", END)
+graph.add_edge("chitchat", END)
 
 support_agent = graph.compile()
