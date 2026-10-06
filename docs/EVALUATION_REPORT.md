@@ -11,7 +11,7 @@
 | 定位 | 企业知识库智能客服 Agent（Agentic RAG），面向真实落地 |
 | 语料 | Dify 官方中文文档 **291 篇 / 98 万字符 → 4043 chunks** |
 | 技术栈 | LangGraph + FastAPI + Qdrant + DeepSeek API + bge-small-zh（embedding）+ SQLite/Postgres + Langfuse |
-| 代码规模 | 29 commits，48 个受版本控制文件 |
+| 代码规模 | 34 commits，49 个受版本控制文件 |
 | 测试 | 7 个纯函数单测（chunker/metrics/cleaner/guardrails）+ 2 个可靠性验收脚本 |
 
 **它要证明的不是"能回答问题"，而是**：有真实指标、真实调优记录、真实故障排查、可观测、可容器化的工程能力。
