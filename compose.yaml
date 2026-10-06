@@ -1,4 +1,24 @@
 services:
+  langfuse:
+    image: langfuse/langfuse:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      - NEXTAUTH_SECRET=dev-secret-change-me
+      - SALT=dev-salt-change-me
+    depends_on:
+      - langfuse-db
+
+  langfuse-db:
+    image: postgres:16
+    environment:
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD=langfuse
+      - POSTGRES_DB=langfuse
+    volumes:
+      - langfuse_data:/var/lib/postgresql/data
+
   qdrant:
     image: qdrant/qdrant:latest
     ports:
@@ -35,6 +55,10 @@ services:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - QDRANT_URL=http://qdrant:6333
+      - LANGFUSE_TRACING=true
+      - LANGFUSE_HOST=http://langfuse:3000
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-pk-dev}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-sk-dev}
     depends_on:
       qdrant:
         condition: service_started
@@ -49,3 +73,4 @@ services:
 volumes:
   qdrant_storage:
   postgres_data:
+  langfuse_data:

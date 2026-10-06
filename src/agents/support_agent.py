@@ -27,6 +27,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.types import interrupt
 
+from agents.guardrails import detect_prompt_injection, mask_pii
 from agents.tools import create_ticket, format_documents, query_order, search_knowledge_base_hybrid
 from core import get_model, settings
 
@@ -113,9 +114,20 @@ async def _standalone_query(messages: list, config: RunnableConfig) -> str:
 
 
 def prepare(state: AgentState, config: RunnableConfig) -> dict:
-    """入口：取最新用户消息作为原始问题（original_question 保持字面，不被改写污染）。"""
-    q = _last_human(state["messages"])
+    """入口：取最新用户消息，PII 脱敏，作为原始问题（不被改写污染）。"""
+    q = mask_pii(_last_human(state["messages"]))
     return {"question": q, "original_question": q, "rewrite_count": 0}
+
+
+def guard(state: AgentState, config: RunnableConfig) -> dict:
+    """安全护栏：Prompt Injection 检测 → 直接转人工，不进检索/工具。"""
+    if detect_prompt_injection(state["original_question"]):
+        return {"intent": "escalate"}
+    return {}
+
+
+def route_after_guard(state: AgentState) -> Literal["escalate", "route"]:
+    return "escalate" if state.get("intent") == "escalate" else "route"
 
 
 async def resolve_query(state: AgentState, config: RunnableConfig) -> dict:
@@ -294,6 +306,7 @@ def _build_tool_specialist(node_name: str, node_fn):
 # Supervisor：意图路由 → 分发到各专家子图（多 Agent 协作）
 graph = StateGraph(AgentState)
 graph.add_node("prepare", prepare)
+graph.add_node("guard", guard)
 graph.add_node("route", route)
 graph.add_node("knowledge", _build_knowledge_specialist())
 graph.add_node("order", _build_order_specialist())
@@ -301,7 +314,8 @@ graph.add_node("complaint", _build_tool_specialist("complaint_handle", complaint
 graph.add_node("chitchat", chitchat)
 graph.add_node("escalate", escalate)
 graph.set_entry_point("prepare")
-graph.add_edge("prepare", "route")
+graph.add_edge("prepare", "guard")
+graph.add_conditional_edges("guard", route_after_guard, {"escalate": "escalate", "route": "route"})
 graph.add_conditional_edges(
     "route",
     route_intent,
