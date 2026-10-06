@@ -18,7 +18,7 @@ class Reranker:
         """对候选 docs 打分并返回重排后的 top_k。"""
         if not docs:
             return []
-        scores = self.model.predict([(query, d["text"]) for d in docs])
+        scores = self.model.predict([(query, d["text"]) for d in docs], batch_size=32)
         ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
         out = []
         for d, s in ranked[:top_k]:

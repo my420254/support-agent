@@ -7,9 +7,10 @@
 
 import re
 
-PHONE_RE = re.compile(r"1[3-9]\d{9}")
+# 用数字边界 (?<!\d)...(?!\d) 而非 \b：中文是 word 字符，\b 在"手机号138…"处不成立
+PHONE_RE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w]+")
-ID_RE = re.compile(r"\b\d{17}[\dXx]\b")
+ID_RE = re.compile(r"(?<!\d)\d{17}[\dXx](?!\d)")
 
 INJECTION_PATTERNS = [
     r"忽略.{0,8}(之前|以上|上面)的.{0,8}(指令|规则|要求|提示)",
@@ -21,10 +22,10 @@ INJECTION_PATTERNS = [
 
 
 def mask_pii(text: str) -> str:
-    """脱敏手机号/邮箱/身份证号。"""
+    """脱敏手机号/邮箱/身份证号。证件号先脱敏（否则被手机号正则截断子串）。"""
+    text = ID_RE.sub("[证件号]", text)
     text = PHONE_RE.sub("[手机号]", text)
     text = EMAIL_RE.sub("[邮箱]", text)
-    text = ID_RE.sub("[证件号]", text)
     return text
 
 
