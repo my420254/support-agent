@@ -76,6 +76,9 @@ def generate() -> None:
         try:
             resp = model.invoke([SystemMessage(prompt)])
             q = str(resp.content).strip().strip('"').strip("'").strip()
+            if not q:  # 非空校验：模型偶发返回空，跳过
+                print(f"  [{i+1}/{len(sampled)}] 空问题，跳过")
+                continue
             golden.append(
                 {
                     "id": f"q{i:03d}",

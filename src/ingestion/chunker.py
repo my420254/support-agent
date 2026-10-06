@@ -12,8 +12,13 @@ def chunk_markdown(content: str, chunk_size: int = 400, overlap: int = 60) -> li
     sections: list[tuple[str, str]] = []
     cur_heading = ""
     cur_lines: list[str] = []
+    in_code_block = False  # 跟踪代码块，避免把代码里的 ## 注释误当标题切断
     for line in content.split("\n"):
-        if line.startswith("##") or line.startswith("###"):
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            cur_lines.append(line)
+            continue
+        if not in_code_block and (line.startswith("##") or line.startswith("###")):
             if cur_lines:
                 sections.append((cur_heading, "\n".join(cur_lines)))
             cur_heading = line.lstrip("#").strip()

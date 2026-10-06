@@ -26,7 +26,15 @@ class HybridRetriever:
         self.store = QdrantStore()
         self.chunks: list = []
         self.bm25: BM25Okapi | None = None
+        self._reranker = None
         self._build_bm25()
+
+    def _get_reranker(self):
+        if self._reranker is None:
+            from retrieval.reranker import Reranker
+
+            self._reranker = Reranker()
+        return self._reranker
 
     def _build_bm25(self) -> None:
         """从 Qdrant 拉全量 chunk 文本（与 dense 同一份数据），jieba 分词后建 BM25。"""
@@ -66,6 +74,11 @@ class HybridRetriever:
             d["score"] = round(float(scores[idx]), 4)
             out.append(d)
         return out
+
+    def search_rerank(self, query: str, top_k: int = 4, candidate_k: int = 20) -> list[dict]:
+        """hybrid 召回 candidate_k 条 → cross-encoder 重排 → 取 top_k。"""
+        candidates = self.search(query, top_k=candidate_k)
+        return self._get_reranker().rerank(query, candidates, top_k)
 
     def search(self, query: str, top_k: int = 4) -> list[dict]:
         # 1) dense 路：向量检索

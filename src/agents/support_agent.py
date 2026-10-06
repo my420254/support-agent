@@ -125,7 +125,7 @@ async def _standalone_query(messages: list, config: RunnableConfig) -> str:
     """SAQ：结合对话历史把最新消息改写成独立 query（补全省略/指代）。"""
     model = _get_model(config)
     history = "\n".join(f"{m.type}: {str(m.content)[:200]}" for m in messages[:-1])
-    resp = await model.ainvoke(
+    resp = await model.with_config(tags=["skip_stream"]).ainvoke(
         [SystemMessage(SAQ_PROMPT.format(history=history, last=str(messages[-1].content)))]
     )
     return str(resp.content).strip()
@@ -153,20 +153,13 @@ async def route(state: AgentState, config: RunnableConfig) -> dict:
     解析失败默认走 kb，交给后面的 Corrective RAG 兜底（不相关会转人工）。
     """
     model = _get_model(config)
-    response = await model.ainvoke(
+    response = await model.with_config(tags=["skip_stream"]).ainvoke(
         [SystemMessage(ROUTE_PROMPT), HumanMessage(state["original_question"])]
     )
     raw = str(response.content).strip().lower()
-    if "order" in raw:
-        intent = "order"
-    elif "complaint" in raw:
-        intent = "complaint"
-    elif "chitchat" in raw:
-        intent = "chitchat"
-    elif "escalate" in raw:
-        intent = "escalate"
-    else:
-        intent = "kb"
+    # 精确匹配（取第一个 token），避免子串误判（如"节点排序(order)规则"被误判成订单）
+    first = raw.split()[0].strip("。.，,；;：")
+    intent = first if first in ("kb", "order", "complaint", "chitchat", "escalate") else "kb"
     return {"intent": intent}
 
 
@@ -195,7 +188,7 @@ async def grade(state: AgentState, config: RunnableConfig) -> dict:
         question=state["original_question"],
         documents=format_documents(state["documents"]),
     )
-    response = await model.ainvoke([SystemMessage(prompt)])
+    response = await model.with_config(tags=["skip_stream"]).ainvoke([SystemMessage(prompt)])
     relevant = str(response.content).strip().lower().startswith("yes")
     return {"relevant": relevant}
 
@@ -207,7 +200,7 @@ async def generate(state: AgentState, config: RunnableConfig) -> dict:
         question=state["original_question"],
         documents=format_documents(state["documents"]),
     )
-    response = await model.ainvoke([SystemMessage(prompt)])
+    response = await model.with_config(tags=["skip_stream"]).ainvoke([SystemMessage(prompt)])
     return {"draft_answer": str(response.content)}
 
 
@@ -218,7 +211,7 @@ async def verify(state: AgentState, config: RunnableConfig) -> dict:
         documents=format_documents(state["documents"]),
         answer=state["draft_answer"],
     )
-    response = await model.ainvoke([SystemMessage(prompt)])
+    response = await model.with_config(tags=["skip_stream"]).ainvoke([SystemMessage(prompt)])
     return {"verified": str(response.content).strip().lower().startswith("yes")}
 
 
@@ -230,7 +223,7 @@ def commit(state: AgentState, config: RunnableConfig) -> dict:
 async def rewrite(state: AgentState, config: RunnableConfig) -> dict:
     """纠正式改写节点：改写检索 query（不影响 original_question）后重检索。"""
     model = _get_model(config)
-    response = await model.ainvoke(
+    response = await model.with_config(tags=["skip_stream"]).ainvoke(
         [SystemMessage(REWRITE_PROMPT), HumanMessage(state["question"])]
     )
     return {

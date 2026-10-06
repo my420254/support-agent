@@ -90,7 +90,7 @@ dify-docs 仓库(zho .mdx)  →  cleaner.py 清洗(frontmatter/JSX/图片/链接
 ```
 
 - **防死循环**：max_iterations 上限（业界 5-6 次），LangGraph 递归预算兜底。
-- **转人工**：LangGraph `interrupt()`，服务层已支持中断恢复（复用底座）。
+- **转人工**：诚实拒答话术（静态消息）。真实的人机协同（LangGraph `interrupt()` 挂起 + Checkpointer 恢复 + 人工坐席 Resume）列为 P5 待做项，不虚标。
 - **输出护栏**：必须引用来源、查不到就明说并转人工，不编造（`support_agent.py` 的 INSTRUCTIONS 已体现，P3 落地成节点）。
 
 **P3 踩坑记录（真实调试）**：DeepSeek v4.1-flash 是推理模型，不支持 `response_format`（JSON 模式）和强制 `tool_choice`，所以 `grade` 节点用「YES/NO 纯文本 + 解析」，不用 `with_structured_output`。
