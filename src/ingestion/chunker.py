@@ -7,8 +7,33 @@
 from pathlib import Path
 
 
-def chunk_markdown(content: str, chunk_size: int = 400, overlap: int = 60) -> list[dict]:
-    """返回 [{heading, text}]，text 为该 section 的正文（或超长段的一个切片）。"""
+def _fixed_chunks(content: str, chunk_size: int, overlap: int) -> list[dict]:
+    """朴素定长切分（忽略标题结构），作为消融基线。"""
+    chunks: list[dict] = []
+    step = max(1, chunk_size - overlap)
+    start = 0
+    while start < len(content):
+        piece = content[start : start + chunk_size].strip()
+        if piece:
+            chunks.append({"heading": "", "text": piece})
+        if start + chunk_size >= len(content):
+            break
+        start += step
+    return chunks
+
+
+def chunk_markdown(
+    content: str, chunk_size: int = 400, overlap: int = 60, strategy: str = "heading"
+) -> list[dict]:
+    """返回 [{heading, text}]。
+
+    strategy:
+      - "heading"（默认）：标题感知，按 ## / ### 切 section，超长再硬切；
+      - "fixed"：朴素定长切分（忽略标题），用于消融对比。
+    """
+    if strategy == "fixed":
+        return _fixed_chunks(content, chunk_size, overlap)
+
     sections: list[tuple[str, str]] = []
     cur_heading = ""
     cur_lines: list[str] = []
