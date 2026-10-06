@@ -25,6 +25,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, MessagesState, StateGraph
+from langgraph.store.base import BaseStore
 from langgraph.types import interrupt
 
 from agents.guardrails import detect_prompt_injection, mask_pii
@@ -219,17 +220,31 @@ def chitchat(state: AgentState, config: RunnableConfig) -> dict:
     return {"messages": [AIMessage(content=CHITCHAT_TEXT)]}
 
 
-async def extract_order_id(state: AgentState, config: RunnableConfig) -> dict:
-    """实体抽取：先正则快速路径，再 LLM 兜底（处理"我的单号是 12345"这类变体）。"""
+async def extract_order_id(state: AgentState, config: RunnableConfig, store: BaseStore | None = None) -> dict:
+    """实体抽取 + 长期记忆：正则/LLM 提取；无则读上次记住的订单号；有则写入记忆。"""
     m = ORDER_ID_RE.search(state["original_question"])
-    if m:
-        return {"order_id": m.group(0).upper()}
-    model = _get_model(config)
-    resp = await model.with_config(tags=["skip_stream"]).ainvoke(
-        [SystemMessage(EXTRACT_ORDER_ID_PROMPT), HumanMessage(state["original_question"])]
-    )
-    oid = str(resp.content).strip()
-    return {"order_id": oid if oid and "none" not in oid.lower() else ""}
+    oid = m.group(0).upper() if m else ""
+    if not oid:
+        model = _get_model(config)
+        resp = await model.with_config(tags=["skip_stream"]).ainvoke(
+            [SystemMessage(EXTRACT_ORDER_ID_PROMPT), HumanMessage(state["original_question"])]
+        )
+        oid = str(resp.content).strip()
+        if "none" in oid.lower():
+            oid = ""
+
+    user_id = config.get("configurable", {}).get("user_id")
+    if store is not None and user_id:
+        try:
+            if oid:
+                await store.aput((user_id,), "last_order_id", oid)  # 记住
+            else:
+                item = await store.aget((user_id,), "last_order_id")  # 读记忆兜底
+                if item and getattr(item, "value", None):
+                    oid = str(item.value)
+        except Exception:
+            pass
+    return {"order_id": oid}
 
 
 def route_order(state: AgentState) -> Literal["query_order", "ask_id"]:
